@@ -17,8 +17,6 @@ from PySide6.QtCore import Signal, QObject, QTimer, Qt, QRectF, QPointF
 from annotator import AnnotationWidget
 
 from PIL import Image
-import cv2
-import numpy as np
 
 # Import camera capture function
 try:
@@ -107,9 +105,11 @@ class MainWindow(QMainWindow):
 
         self.is_training = False
         self.is_predicting = False
+        self.is_capturing_and_predicting = False  # New flag for combined operation
         self.training_start_time = None
         self.progress_dialog = None
         self.prediction_progress_dialog = None
+        self.combined_progress_dialog = None  # For capture + predict
         self.current_model_path = None
 
         # Add a timer to track bounding box changes
@@ -140,6 +140,15 @@ class MainWindow(QMainWindow):
             self.capture_btn.setEnabled(False)
             self.capture_btn.setToolTip("Camera module not available")
 
+        # NEW: Capture & Predict button
+        self.capture_predict_btn = QPushButton("📸 Capture & Predict")
+        self.capture_predict_btn.clicked.connect(self.capture_and_predict)
+        self.capture_predict_btn.setStyleSheet("background-color: #FF4081; color: white; font-weight: bold;")
+        self.capture_predict_btn.setToolTip("Capture image and run prediction")
+        if not CAMERA_AVAILABLE:
+            self.capture_predict_btn.setEnabled(False)
+            self.capture_predict_btn.setToolTip("Camera module not available")
+
         prev_btn = QPushButton("◀ Prev")
         prev_btn.clicked.connect(self.prev_image)
 
@@ -168,13 +177,14 @@ class MainWindow(QMainWindow):
         self.predict_btn.setEnabled(False)
 
         # Auto TCP Scan button
-        self.labeling_btn = QPushButton("🔍 Auto TCP Scan")
+        self.labeling_btn = QPushButton("Define Label Name")
         self.labeling_btn.clicked.connect(self.auto_tcp_scan)
         self.labeling_btn.setStyleSheet("background-color: #795548; color: white; font-weight: bold;")
         self.labeling_btn.setToolTip("Auto connect TCP and send bounding box coordinates")
 
         top_bar.addWidget(open_folder_btn)
         top_bar.addWidget(self.capture_btn)
+        top_bar.addWidget(self.capture_predict_btn)  # Add new button
         top_bar.addWidget(prev_btn)
         top_bar.addWidget(next_btn)
         top_bar.addWidget(undo_btn)
@@ -379,6 +389,7 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+P"), self, activated=self.predict_current_image)
         QShortcut(QKeySequence("Ctrl+A"), self, activated=self.auto_add_label)
         QShortcut(QKeySequence("Ctrl+D"), self, activated=self.auto_tcp_scan)
+        QShortcut(QKeySequence("Ctrl+C"), self, activated=self.capture_and_predict)  # New shortcut
 
     def track_bounding_box_changes(self):
         """Track when new bounding boxes are drawn"""
@@ -399,6 +410,272 @@ class MainWindow(QMainWindow):
                 self.update_tcp_messages(f"[{timestamp}] 📦 New bounding box drawn: {latest_label}")
 
             self.previous_box_count = current_count
+
+    # NEW: Capture and Predict Function
+    def capture_and_predict(self):
+        """Capture image from camera and run prediction"""
+        if not CAMERA_AVAILABLE:
+            QMessageBox.warning(self, "Camera Unavailable",
+                                "Camera module is not available. Please install camera dependencies.")
+            return
+
+        if not hasattr(self, 'current_model') or self.current_model is None:
+            QMessageBox.warning(self, "No Model Loaded",
+                                "Please load a trained model first to use Capture & Predict.")
+            return
+
+        if self.is_capturing_and_predicting:
+            QMessageBox.warning(self, "Operation in Progress",
+                                "Capture & Predict is already in progress. Please wait.")
+            return
+
+        # Create progress dialog for combined operation
+        self.combined_progress_dialog = QProgressDialog(
+            "Starting capture & predict...", "Cancel", 0, 100, self
+        )
+        self.combined_progress_dialog.setWindowTitle("📸 Capture & Predict")
+        self.combined_progress_dialog.setWindowModality(Qt.WindowModal)
+        self.combined_progress_dialog.setMinimumDuration(0)
+        self.combined_progress_dialog.canceled.connect(self.cancel_capture_and_predict)
+
+        self.is_capturing_and_predicting = True
+        self.combined_progress_dialog.setValue(10)
+        self.combined_progress_dialog.setLabelText("Preparing to capture image...")
+
+        # Disable buttons during operation
+        self.capture_predict_btn.setEnabled(False)
+        self.capture_predict_btn.setText("Capturing...")
+        self.capture_btn.setEnabled(False)
+        self.predict_btn.setEnabled(False)
+
+        # Start combined operation in a separate thread
+        thread = threading.Thread(target=self.run_capture_and_predict, daemon=True)
+        thread.start()
+
+    def run_capture_and_predict(self):
+        """Run capture and predict in sequence"""
+        try:
+            # Step 1: Capture image
+            if self.combined_progress_dialog:
+                self.combined_progress_dialog.setValue(20)
+                self.combined_progress_dialog.setLabelText("Capturing image from camera...")
+
+            # Create a temporary callback to capture the image
+            captured_image_path = [None]  # Use list to store captured path
+            capture_complete = threading.Event()
+
+            def capture_callback(success, message, image_path):
+                if success and image_path:
+                    captured_image_path[0] = image_path
+                capture_complete.set()
+
+            # Start capture
+            AutoCaptureFlow(callback=capture_callback)
+
+            # Wait for capture to complete with timeout
+            capture_complete.wait(timeout=30)  # 30 second timeout
+
+            if not captured_image_path[0]:
+                raise Exception("Image capture failed or timed out")
+
+            # Step 2: Save captured image to appropriate folder
+            if self.combined_progress_dialog:
+                self.combined_progress_dialog.setValue(40)
+                self.combined_progress_dialog.setLabelText("Processing captured image...")
+
+            # Use capture folder if set, otherwise default
+            if self.capture_folder is None:
+                self.capture_folder = "C:\\Users\\SiP-PHChin\\OneDrive - SIP Technology (M) Sdn Bhd\\Desktop\\Capture Image"
+
+            os.makedirs(self.capture_folder, exist_ok=True)
+
+            # Move/rename captured image
+            base_name = os.path.basename(captured_image_path[0])
+            save_path = os.path.join(self.capture_folder, base_name)
+
+            # Ensure unique filename
+            count = 1
+            name, ext = os.path.splitext(base_name)
+            while os.path.exists(save_path):
+                save_path = os.path.join(self.capture_folder, f"{name}_{count}{ext}")
+                count += 1
+
+            os.rename(captured_image_path[0], save_path)
+            final_image_path = save_path
+
+            # Step 3: Load the image into viewer
+            if self.combined_progress_dialog:
+                self.combined_progress_dialog.setValue(60)
+                self.combined_progress_dialog.setLabelText("Loading captured image...")
+
+            # Update UI in main thread
+            def load_image_ui():
+                if final_image_path not in self.image_files:
+                    self.image_files.append(final_image_path)
+                    self.image_files.sort()
+
+                self.current_index = self.image_files.index(final_image_path)
+                self.viewer.boxes.clear()
+                self.viewer.load_image(final_image_path)
+                self.image_path = final_image_path
+                self.image_info_label.setText(f"{os.path.basename(final_image_path)}")
+
+            self.on_ui_thread(load_image_ui)
+
+            # Step 4: Run prediction
+            if self.combined_progress_dialog:
+                self.combined_progress_dialog.setValue(80)
+                self.combined_progress_dialog.setLabelText("Running prediction on captured image...")
+
+            # Run prediction on the captured image
+            predictions = self.run_prediction_in_thread(final_image_path)
+
+            # Step 5: Display results
+            if self.combined_progress_dialog:
+                self.combined_progress_dialog.setValue(100)
+                self.combined_progress_dialog.setLabelText("Complete!")
+
+            # Update UI with results
+            def show_results_ui():
+                if predictions:
+                    # Display predictions in viewer
+                    self.viewer.display_predictions(predictions)
+
+                    # Show success message
+                    QMessageBox.information(
+                        self,
+                        "✅ Capture & Predict Complete",
+                        f"Successfully captured and analyzed image!\n\n"
+                        f"📸 Captured: {os.path.basename(final_image_path)}\n"
+                        f"🎯 Found {len(predictions)} object(s)\n"
+                        f"💾 Saved to: {final_image_path}\n\n"
+                        f"The image has been loaded for annotation."
+                    )
+                else:
+                    QMessageBox.information(
+                        self,
+                        "Capture & Predict Complete",
+                        f"Image captured but no objects detected.\n\n"
+                        f"📸 Captured: {os.path.basename(final_image_path)}\n"
+                        f"💾 Saved to: {final_image_path}"
+                    )
+
+            self.on_ui_thread(show_results_ui)
+
+            # Clean up
+            self.on_ui_thread(self.finish_capture_and_predict)
+
+        except Exception as e:
+            error_msg = f"Capture & Predict failed: {str(e)}"
+            print(f"Error in capture & predict: {e}")
+
+            def show_error_ui():
+                QMessageBox.critical(self, "Capture & Predict Failed", error_msg)
+                self.finish_capture_and_predict()
+
+            self.on_ui_thread(show_error_ui)
+
+    def run_prediction_in_thread(self, image_path):
+        """Run prediction and return results (for use in threads)"""
+        try:
+            from ultralytics import YOLO
+            import torch
+
+            if not hasattr(self, 'current_model') or self.current_model is None:
+                if hasattr(self, 'current_model_path') and self.current_model_path:
+                    self.current_model = YOLO(self.current_model_path)
+                else:
+                    return []
+
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+            results = self.current_model.predict(
+                source=image_path,
+                conf=0.25,
+                iou=0.45,
+                device=device,
+                save=False,
+                save_txt=False,
+                save_conf=True,
+                show=False,
+                verbose=False
+            )
+
+            predictions = []
+            if results and len(results) > 0:
+                result = results[0]
+
+                if hasattr(result, 'boxes') and result.boxes is not None:
+                    boxes = result.boxes
+
+                    if hasattr(boxes, 'xyxy') and boxes.xyxy is not None:
+                        num_detections = len(boxes.xyxy)
+                    else:
+                        num_detections = 0
+
+                    for i in range(num_detections):
+                        try:
+                            box = boxes.xyxy[i].cpu().numpy()
+                            conf = float(boxes.conf[i].cpu().numpy()) if boxes.conf is not None else 0.0
+                            cls = int(boxes.cls[i].cpu().numpy()) if boxes.cls is not None else 0
+                            class_name = f"class_{cls}"
+                            if hasattr(result, 'names') and result.names:
+                                class_name = result.names.get(cls, f"class_{cls}")
+
+                            predictions.append({
+                                'bbox': box.tolist(),
+                                'confidence': conf,
+                                'class_id': cls,
+                                'class_name': class_name
+                            })
+                        except Exception as e:
+                            print(f"Error processing detection {i}: {e}")
+                            continue
+
+            return predictions
+
+        except Exception as e:
+            print(f"Error in run_prediction_in_thread: {e}")
+            return []
+
+    def on_ui_thread(self, func):
+        """Run function on UI thread"""
+        QTimer.singleShot(0, func)
+
+    def finish_capture_and_predict(self):
+        """Clean up after capture & predict operation"""
+        self.is_capturing_and_predicting = False
+
+        if self.combined_progress_dialog:
+            self.combined_progress_dialog.close()
+            self.combined_progress_dialog = None
+
+        # Re-enable buttons
+        self.capture_predict_btn.setEnabled(True)
+        self.capture_predict_btn.setText("📸 Capture & Predict")
+        self.capture_btn.setEnabled(True)
+        self.predict_btn.setEnabled(hasattr(self, 'current_model') and self.current_model is not None)
+
+        self.status_label.setText("Ready")
+
+    def cancel_capture_and_predict(self):
+        """Cancel the capture & predict operation"""
+        if self.is_capturing_and_predicting:
+            self.is_capturing_and_predicting = False
+            self.status_label.setText("Capture & Predict cancelled")
+
+            # Re-enable buttons
+            self.capture_predict_btn.setEnabled(True)
+            self.capture_predict_btn.setText("📸 Capture & Predict")
+            self.capture_btn.setEnabled(True)
+            self.predict_btn.setEnabled(hasattr(self, 'current_model') and self.current_model is not None)
+
+            QMessageBox.information(self, "Operation Cancelled",
+                                    "Capture & Predict has been cancelled.")
+
+            if self.combined_progress_dialog:
+                self.combined_progress_dialog.close()
+                self.combined_progress_dialog = None
 
     def auto_tcp_scan(self):
         """Auto connect TCP and perform Scan_ID"""
@@ -1327,6 +1604,7 @@ class MainWindow(QMainWindow):
                 model_size = os.path.getsize(model_path) / (1024 * 1024)
 
                 self.predict_btn.setEnabled(True)
+                self.capture_predict_btn.setEnabled(True)  # Enable capture & predict button too
 
                 self.model_info_label.setText(f"Model: {model_name} ({model_size:.1f} MB) on {device}")
                 self.model_info_label.setStyleSheet("color: #4CAF50; font-weight: bold;")
@@ -1339,7 +1617,7 @@ class MainWindow(QMainWindow):
                     f"• Model: {model_name}\n"
                     f"• Size: {model_size:.1f} MB\n"
                     f"• Device: {device}\n\n"
-                    f"Prediction buttons are now enabled."
+                    f"Prediction and Capture & Predict buttons are now enabled."
                 )
 
             except Exception as e:
@@ -1348,6 +1626,7 @@ class MainWindow(QMainWindow):
                 self.current_model = None
                 self.current_model_path = None
                 self.predict_btn.setEnabled(False)
+                self.capture_predict_btn.setEnabled(CAMERA_AVAILABLE)  # Only enable if camera available
                 self.model_info_label.setText("No model loaded")
                 self.model_info_label.setStyleSheet("color: #666; font-style: italic;")
 
@@ -1792,10 +2071,10 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         """Handle window close event"""
-        if self.is_training or self.is_predicting:
+        if self.is_training or self.is_predicting or self.is_capturing_and_predicting:
             reply = QMessageBox.question(
                 self, "Operation in Progress",
-                "Training or prediction is currently in progress. Do you want to stop and exit?",
+                "An operation is currently in progress. Do you want to stop and exit?",
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No
             )
             if reply != QMessageBox.Yes:
@@ -1804,6 +2083,7 @@ class MainWindow(QMainWindow):
             else:
                 self.is_training = False
                 self.is_predicting = False
+                self.is_capturing_and_predicting = False
 
         self.save_current()
 
