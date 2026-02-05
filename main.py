@@ -67,10 +67,10 @@ class MainWindow(QMainWindow):
         self.model_path = f"{self.base_path}\\Model"
         self.labeling_path = f"{self.base_path}\\Labeling"
 
-        # Start with object0 as the first label
-        self.labels = ["object0"]
+        # Start with 0 as the first label
+        self.labels = ["0"]
         self.label_counter = 0
-        self.label_colors = {"object0": QColor(255, 0, 0)}
+        self.label_colors = {"0": QColor(255, 0, 0)}
 
         self.image_files = []
         self.current_index = -1
@@ -201,7 +201,7 @@ class MainWindow(QMainWindow):
         self.add_label_btn = QPushButton("+")
         self.add_label_btn.setFixedWidth(40)
         self.add_label_btn.clicked.connect(self.auto_add_label)
-        self.add_label_btn.setToolTip("Add new label (object1, object2, ...)")
+        self.add_label_btn.setToolTip("Add new label (1, 2, 3, ...)")  # Updated tooltip
 
         label_bar = QHBoxLayout()
         label_bar.addWidget(self.label_combo)
@@ -459,7 +459,7 @@ class MainWindow(QMainWindow):
                                 "Failed to connect to TCP server. Please check settings.")
 
     def perform_scan_id(self):
-        """Send bounding box coordinates via TCP"""
+        """Send OK message via TCP"""
         if not self.tcp_connected or not self.tcp_socket:
             QMessageBox.warning(self, "Not Connected",
                                 "TCP connection failed. Please check settings.")
@@ -470,68 +470,32 @@ class MainWindow(QMainWindow):
                                 "Please draw at least one bounding box first")
             return
 
-        # Get the latest bounding box
-        if self.viewer.boxes:
-            latest_box, latest_label = self.viewer.boxes[-1]
+        try:
+            # Just send "OK" instead of coordinates
+            message = "OK"
 
-            # Store for auto-cropping
-            self.last_bounding_box = (latest_box, latest_label)
-            self.last_box_label = latest_label
+            self.tcp_socket.sendall(message.encode('utf-8'))
+            self.tcp_signals.message_sent.emit(message)
 
-            # Get image dimensions from viewer
-            if hasattr(self.viewer, 'pixmap') and self.viewer.pixmap:
-                img_width = self.viewer.pixmap.width()
-                img_height = self.viewer.pixmap.height()
+            timestamp = time.strftime("%H:%M:%S")
+            self.update_tcp_messages(f"[{timestamp}] 📡 Sent: {message}")
 
-                if img_width > 0 and img_height > 0:
-                    # Calculate normalized coordinates (YOLO format)
-                    x_center = (latest_box.x() + latest_box.width() / 2) / img_width
-                    y_center = (latest_box.y() + latest_box.height() / 2) / img_height
-                    width = latest_box.width() / img_width
-                    height = latest_box.height() / img_height
+            self.status_label.setText("Message 'OK' sent to server")
 
-                    # Create message in YOLO format
-                    label_text = self.label_combo.currentText()
-                    label_id = 0  # Default
-                    if label_text.startswith("object"):
-                        try:
-                            label_id = int(label_text.replace("object", ""))
-                        except:
-                            label_id = 0
+            # Show brief notification
+            self.show_scan_success_notification(message)
 
-                    message = f"{label_id} {x_center:.6f} {y_center:.6f} {width:.6f} {height:.6f}"
+        except socket.error as e:
+            self.update_tcp_messages(f"[Error] Failed to send: {str(e)}")
+            QMessageBox.critical(self, "Send Failed",
+                                 f"Failed to send message:\n{str(e)}")
 
-                    try:
-                        self.tcp_socket.sendall(message.encode('utf-8'))
-                        self.tcp_signals.message_sent.emit(message)
-
-                        timestamp = time.strftime("%H:%M:%S")
-                        self.update_tcp_messages(f"[{timestamp}] 📡 Sent bounding box coordinates")
-                        self.update_tcp_messages(f"  Label: {label_text} (ID: {label_id})")
-                        self.update_tcp_messages(f"  Coordinates: {message}")
-
-                        self.status_label.setText("Bounding box coordinates sent to server")
-
-                        # Show brief notification
-                        self.show_scan_success_notification(label_text, message)
-
-                    except socket.error as e:
-                        self.update_tcp_messages(f"[Error] Failed to send: {str(e)}")
-                        QMessageBox.critical(self, "Send Failed",
-                                             f"Failed to send coordinates:\n{str(e)}")
-                else:
-                    QMessageBox.warning(self, "Invalid Image", "Cannot get image dimensions")
-            else:
-                QMessageBox.warning(self, "No Image", "Please load an image first")
-        else:
-            QMessageBox.warning(self, "No Boxes", "Please draw a bounding box first")
-
-    def show_scan_success_notification(self, label, coordinates):
+    def show_scan_success_notification(self, message):
         """Show a brief success notification"""
         msg_box = QMessageBox(self)
-        msg_box.setWindowTitle("Scan_ID Success")
-        msg_box.setText(f"✅ Bounding box sent!\n\n"
-                        f"Label: {label}\n"
+        msg_box.setWindowTitle("TCP Message Sent")
+        msg_box.setText(f"✅ Message sent!\n\n"
+                        f"Message: {message}\n"
                         f"Server: {self.host_edit.text()}:{self.port_spin.value()}")
         msg_box.setIcon(QMessageBox.Information)
 
@@ -738,13 +702,13 @@ class MainWindow(QMainWindow):
             self.status_label.setText(f"Auto-saved: {filename}")
 
             # Send confirmation back via TCP
-            if self.tcp_connected and self.tcp_socket:
-                try:
-                    response = f"AUTO_CROP_SAVED: {filename}"
-                    self.tcp_socket.sendall(response.encode('utf-8'))
-                    self.tcp_signals.message_sent.emit(response)
-                except socket.error as e:
-                    self.update_tcp_messages(f"[Error] Failed to send confirmation: {str(e)}")
+            # if self.tcp_connected and self.tcp_socket:
+            #     try:
+            #         response = f"AUTO_CROP_SAVED: {filename}"
+            #         self.tcp_socket.sendall(response.encode('utf-8'))
+            #         self.tcp_signals.message_sent.emit(response)
+            #     except socket.error as e:
+            #         self.update_tcp_messages(f"[Error] Failed to send confirmation: {str(e)}")
 
             # Show brief notification
             QTimer.singleShot(100, lambda: self.show_auto_crop_notification(filename, label_name, sanitized_text))
@@ -930,7 +894,7 @@ class MainWindow(QMainWindow):
             model_name = model_map[model_size]
 
             # Use the specific path for saving models
-            save_dir = "C:\\Users\\SiP-PHChin\\OneDrive - SIP Technology (M) Sdn Bhd\\Desktop\\Model"
+            save_dir = self.model_path
 
             # Create the Model folder if it doesn't exist
             os.makedirs(save_dir, exist_ok=True)
@@ -938,6 +902,13 @@ class MainWindow(QMainWindow):
             import torch
             has_cuda = torch.cuda.is_available()
             device_info = "GPU (CUDA)" if has_cuda else "CPU"
+
+            if has_cuda:
+                gpu_name = torch.cuda.get_device_name(0)
+                device_info = f"GPU: {gpu_name}"
+            else:
+                device_info = "CPU"
+
 
             time_per_epoch = 30 if not has_cuda else 5
             estimated_minutes = int((epochs * time_per_epoch) / 60)
@@ -1117,7 +1088,7 @@ class MainWindow(QMainWindow):
                     save=True,
                     save_period=min(10, epochs // 10),  # Save checkpoints periodically
                     plots=True,
-                    workers=4,
+                    workers=0,
                     patience=50,  # Early stopping patience
                     seed=42
                 )
@@ -1298,7 +1269,7 @@ class MainWindow(QMainWindow):
     def auto_add_label(self):
         """Automatically add a sequentially numbered label (object1, object2, etc.)"""
         self.label_counter += 1
-        new_label = f"object{self.label_counter}"
+        new_label = str(self.label_counter)
 
         if new_label not in self.labels:
             self.labels.append(new_label)

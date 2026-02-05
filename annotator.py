@@ -312,8 +312,9 @@ class AnnotationWidget(QWidget):
         painter = QPainter(self)
         painter.drawPixmap(self.offset_x, self.offset_y, self.scaled_pixmap)
 
-        # Draw all boxes (all transparent - no fill)
+        # Draw all boxes
         for i, (rect, label) in enumerate(self.boxes):
+            # Get color - use the label as-is or extract class name
             color = self.get_label_color(label)
 
             if i == self.selected_index:
@@ -324,20 +325,27 @@ class AnnotationWidget(QWidget):
                 pen = QPen(color, 2)
 
             painter.setPen(pen)
-            painter.setBrush(Qt.NoBrush)  # TRANSPARENT - no fill
+            painter.setBrush(Qt.NoBrush)
 
             r = self.image_to_screen(rect)
             painter.drawRect(r)
 
-            # Draw label with class ID
+            # Draw label
             if i == self.selected_index:
                 painter.setPen(Qt.yellow)
             else:
                 painter.setPen(color)
 
-            # Show label and class ID
-            class_id = self.get_class_id(label)
-            label_text = f"{label} ({class_id})"
+            # Check if this is a numeric label (like "0", "1", "2")
+            # or a text label (like "piano", "SIP_TEST")
+            if label.isdigit():
+                # This is a numeric label like "0" - add class ID
+                class_id = self.get_class_id(label)
+                label_text = f"{label} ({class_id})"
+            else:
+                # This is a text label - display as-is
+                label_text = label
+
             painter.drawText(r.topLeft() + QPointF(3, -3), label_text)
 
             # Draw resize handles for selected box
@@ -361,7 +369,7 @@ class AnnotationWidget(QWidget):
         if self.drawing:
             pen = QPen(Qt.white, 2, Qt.DashLine)
             painter.setPen(pen)
-            painter.setBrush(Qt.NoBrush)  # No fill
+            painter.setBrush(Qt.NoBrush)
             temp = QRectF(self.start_img_pt, self.end_img_pt).normalized()
             painter.drawRect(self.image_to_screen(temp))
 
@@ -698,38 +706,35 @@ names: {class_names}
         print(f"✓ Updated classes.txt with {len(class_names)} classes")
 
     def display_predictions(self, predictions):
-        """Display predictions as annotation boxes and store original data"""
-        # Clear existing boxes
+        """Display model predictions on the image"""
+        print(f"DEBUG [AnnotationWidget]: Received {len(predictions)} predictions")
+
+        # Clear existing boxes first
         self.boxes.clear()
 
-        # Store the raw predictions for later use
-        self.current_predictions = predictions  # NEW: Store predictions
+        for i, pred in enumerate(predictions):
+            bbox = pred.get('bbox', [0, 0, 0, 0])
+            confidence = pred.get('confidence', 0.0)
 
-        # Add each prediction as a box
-        for pred in predictions:
-            bbox = pred['bbox']  # [x1, y1, x2, y2]
-            class_name = pred['class_name']
-            confidence = pred['confidence']
+            # Use the class_name from prediction
+            class_name = pred.get('class_name', f"class_{pred.get('class_id', 0)}")
 
-            # Ensure we have valid coordinates
+            # Create QRectF from bbox
             if len(bbox) >= 4:
-                # Create QRectF (x, y, width, height)
                 rect = QRectF(bbox[0], bbox[1], bbox[2] - bbox[0], bbox[3] - bbox[1])
 
-                # Create label with confidence
+                # Store label WITH confidence
                 label = f"{class_name} ({confidence:.2f})"
 
-                # Add to boxes list
+                print(f"DEBUG [AnnotationWidget] Prediction {i}:")
+                print(f"  - Storing label as: '{label}'")
+
                 self.boxes.append((rect, label))
+            else:
+                print(f"  - ERROR: Invalid bbox format: {bbox}")
 
-        # Update the display
         self.update()
-
-        # Print debug info
-        print(f"✓ Displayed {len(predictions)} predictions")
-        print("Pixel coordinates (x1, y1, x2, y2):")
-        for i, pred in enumerate(predictions):
-            print(f"  Box {i}: {pred['class_name']} ({pred['confidence']:.2f}) at {pred['bbox']}")
+        print(f"DEBUG [AnnotationWidget]: Updated with {len(self.boxes)} boxes")
 
     def save_predictions_as_annotations(self, image_path, predictions, format_type="yolo"):
         """
