@@ -65,6 +65,7 @@ class MainWindow(QMainWindow):
         self.capture_image_path = f"{self.base_path}\\Capture Image"
         self.capture_image_prediction_path = f"{self.base_path}\\Capture Prediction"
         self.model_path = f"{self.base_path}\\Model"
+        self.labeling_path = f"{self.base_path}\\Labeling"
 
         # Start with 0 as the first label
         self.labels = ["0"]
@@ -394,6 +395,7 @@ class MainWindow(QMainWindow):
             self.capture_image_path,
             self.capture_image_prediction_path,
             self.model_path,
+            self.labeling_path,
         ]
 
         for folder in folders_to_create:
@@ -672,13 +674,13 @@ class MainWindow(QMainWindow):
             # Generate filename in format: labelName_tcpipreceivedtext.bmp
             label_name = label.split()[0] if ' ' in label else label
             filename = f"{label_name}_{sanitized_text}.bmp"
-            save_path = os.path.join(self.capture_image_path, filename)
+            save_path = os.path.join(self.labeling_path, filename)
 
             # Ensure unique filename
             counter = 1
             while os.path.exists(save_path):
                 filename = f"{label_name}_{sanitized_text}_{counter}.bmp"
-                save_path = os.path.join(self.capture_image_path, filename)
+                save_path = os.path.join(self.labeling_path, filename)
                 counter += 1
 
             # Save as BMP format
@@ -694,7 +696,7 @@ class MainWindow(QMainWindow):
             self.update_tcp_messages(f"[AutoCrop]   Label: {label_name}")
             self.update_tcp_messages(f"[AutoCrop]   TCP Text: {sanitized_text}")
             self.update_tcp_messages(f"[AutoCrop]   Dimensions: {crop_width}x{crop_height} pixels")
-            self.update_tcp_messages(f"[AutoCrop]   Saved to: {self.capture_image_path}")
+            self.update_tcp_messages(f"[AutoCrop]   Saved to: {self.labeling_path}")
 
             # Update status label
             self.status_label.setText(f"Auto-saved: {filename}")
@@ -736,9 +738,9 @@ class MainWindow(QMainWindow):
             return False
 
         # Check if save folder exists
-        if not os.path.exists(self.capture_image_path):
+        if not os.path.exists(self.labeling_path):
             try:
-                os.makedirs(self.capture_image_path, exist_ok=True)
+                os.makedirs(self.labeling_path, exist_ok=True)
             except:
                 self.update_tcp_messages(f"[AutoCrop] ❌ Cannot create save folder")
                 return False
@@ -972,6 +974,12 @@ class MainWindow(QMainWindow):
             from pathlib import Path
 
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
+            if device == 'cuda':
+                gpu_index = torch.cuda.current_device()
+                gpu_name = torch.cuda.get_device_name(gpu_index)
+                gpu_info = f"GPU {gpu_index}: {gpu_name}"
+            else:
+                gpu_info = "CPU"
             gpu_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
 
             # Update progress - Initialization
@@ -1776,6 +1784,15 @@ class MainWindow(QMainWindow):
 
     def capture_predict(self):
         """Second camera capture - also runs auto-prediction"""
+        # 🚨 Check model FIRST
+        if not hasattr(self, 'current_model') or self.current_model is None:
+            QMessageBox.warning(
+                self,
+                "No Model Loaded",
+                "No model is loaded.\n\n"
+                "Please load a trained YOLO model before using Capture & Predict."
+            )
+            return
         # Use the SAME path for both cameras
         self.capture_folder_2 = self.capture_image_prediction_path
 
@@ -1829,24 +1846,23 @@ class MainWindow(QMainWindow):
         self.capture2_btn.setEnabled(True)
         self.capture2_btn.setText("Capture & Predict")
 
-        if success and image_path:
-            if os.path.exists(image_path):
-                if image_path not in self.image_files:
-                    self.image_files.append(image_path)
-                    self.image_files.sort()
+        if success and image_path and os.path.exists(image_path):
+            if image_path not in self.image_files:
+                self.image_files.append(image_path)
+                self.image_files.sort()
 
-                self.current_index = self.image_files.index(image_path)
-                self.load_current_image()
+            self.current_index = self.image_files.index(image_path)
+            self.load_current_image()
 
-                # Auto-run prediction after capture
-                if hasattr(self, 'current_model') and self.current_model is not None:
-                    QTimer.singleShot(500, self.predict_current_image)
-                else:
-                    # Model not loaded - show warning
-                    self.status_label.setText("Model not loaded - skipping auto-prediction")
+            # Auto-run prediction
+            QTimer.singleShot(500, self.predict_current_image)
+
         else:
-            QMessageBox.critical(self, "Capture Failed",
-                                 f"Camera capture failed!\n{message}")
+            QMessageBox.critical(
+                self,
+                "Capture Failed",
+                f"Camera capture failed!\n{message}"
+            )
 
     def get_label_color(self, label):
         return self.label_colors.get(label, QColor(255, 255, 255))
