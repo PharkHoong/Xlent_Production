@@ -65,7 +65,6 @@ class MainWindow(QMainWindow):
         self.capture_image_path = f"{self.base_path}\\Capture Image"
         self.capture_image_prediction_path = f"{self.base_path}\\Capture Prediction"
         self.model_path = f"{self.base_path}\\Model"
-        self.labeling_path = f"{self.base_path}\\Labeling"
 
         # Start with 0 as the first label
         self.labels = ["0"]
@@ -395,7 +394,6 @@ class MainWindow(QMainWindow):
             self.capture_image_path,
             self.capture_image_prediction_path,
             self.model_path,
-            self.labeling_path,
         ]
 
         for folder in folders_to_create:
@@ -674,13 +672,13 @@ class MainWindow(QMainWindow):
             # Generate filename in format: labelName_tcpipreceivedtext.bmp
             label_name = label.split()[0] if ' ' in label else label
             filename = f"{label_name}_{sanitized_text}.bmp"
-            save_path = os.path.join(self.labeling_path, filename)
+            save_path = os.path.join(self.capture_image_path, filename)
 
             # Ensure unique filename
             counter = 1
             while os.path.exists(save_path):
                 filename = f"{label_name}_{sanitized_text}_{counter}.bmp"
-                save_path = os.path.join(self.labeling_path, filename)
+                save_path = os.path.join(self.capture_image_path, filename)
                 counter += 1
 
             # Save as BMP format
@@ -696,7 +694,7 @@ class MainWindow(QMainWindow):
             self.update_tcp_messages(f"[AutoCrop]   Label: {label_name}")
             self.update_tcp_messages(f"[AutoCrop]   TCP Text: {sanitized_text}")
             self.update_tcp_messages(f"[AutoCrop]   Dimensions: {crop_width}x{crop_height} pixels")
-            self.update_tcp_messages(f"[AutoCrop]   Saved to: {self.labeling_path}")
+            self.update_tcp_messages(f"[AutoCrop]   Saved to: {self.capture_image_path}")
 
             # Update status label
             self.status_label.setText(f"Auto-saved: {filename}")
@@ -738,9 +736,9 @@ class MainWindow(QMainWindow):
             return False
 
         # Check if save folder exists
-        if not os.path.exists(self.labeling_path):
+        if not os.path.exists(self.capture_image_path):
             try:
-                os.makedirs(self.labeling_path, exist_ok=True)
+                os.makedirs(self.capture_image_path, exist_ok=True)
             except:
                 self.update_tcp_messages(f"[AutoCrop] ❌ Cannot create save folder")
                 return False
@@ -1609,17 +1607,28 @@ class MainWindow(QMainWindow):
 
     def on_prediction_progress(self, progress, status):
         """Update prediction progress dialog"""
-        if self.prediction_progress_dialog:
-            self.prediction_progress_dialog.setValue(progress)
-            self.prediction_progress_dialog.setLabelText(status)
+        dialog = self.prediction_progress_dialog
+        if dialog is None:
+            return  # dialog already closed
+
+        try:
+            dialog.setValue(progress)
+            dialog.setLabelText(status)
             self.status_label.setText(f"Prediction: {status}")
+        except RuntimeError:
+            # Dialog was deleted by Qt
+            pass
 
     def on_prediction_finished(self, success, message, predictions):
         """Handle prediction completion"""
         self.is_predicting = False
 
-        if self.prediction_progress_dialog:
-            self.prediction_progress_dialog.close()
+        dialog = self.prediction_progress_dialog
+        if dialog:
+            try:
+                dialog.close()
+            except RuntimeError:
+                pass
             self.prediction_progress_dialog = None
 
         if success:
