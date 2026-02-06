@@ -1,9 +1,11 @@
 import os
 import random
 import shutil
+import yaml  # Added missing import
 from PySide6.QtWidgets import QWidget
 from PySide6.QtGui import QPainter, QPen, QPixmap, QColor, QBrush
 from PySide6.QtCore import Qt, QRectF, QPointF
+
 
 class AnnotationWidget(QWidget):
     def __init__(self, get_current_label, get_label_color):
@@ -461,6 +463,94 @@ class AnnotationWidget(QWidget):
             for label, class_id in sorted_items:
                 print(f"  {class_id}: {label}")
 
+    def auto_split_and_generate_yaml(self, source_folder, labeling_path):
+        """Auto split dataset and generate data.yaml for YOLO training"""
+        try:
+            # 1. FIRST SPLIT THE DATASET
+            # Create directory structure
+            images_train_dir = os.path.join(source_folder, "images", "train")
+            images_val_dir = os.path.join(source_folder, "images", "val")
+            labels_train_dir = os.path.join(source_folder, "labels", "train")
+            labels_val_dir = os.path.join(source_folder, "labels", "val")
+
+            for dir_path in [images_train_dir, images_val_dir, labels_train_dir, labels_val_dir]:
+                os.makedirs(dir_path, exist_ok=True)
+
+            # Get all images from source folder
+            image_files = []
+            for ext in ['.bmp', '.jpg', '.jpeg', '.png', '.tif', '.tiff']:
+                image_files.extend([f for f in os.listdir(source_folder)
+                                    if f.lower().endswith(ext)])
+
+            if not image_files:
+                print("No image files found for training")
+                return False
+
+            # Get all label files from source folder
+            label_files = [f for f in os.listdir(source_folder)
+                           if f.lower().endswith('.txt')]
+
+            # Shuffle and split (80% train, 20% val)
+            random.shuffle(image_files)
+            split_idx = int(len(image_files) * 0.8)
+            train_images = image_files[:split_idx]
+            val_images = image_files[split_idx:]
+
+            print(f"Total images: {len(image_files)}")
+            print(f"Train images: {len(train_images)}")
+            print(f"Val images: {len(val_images)}")
+
+            # Copy images and labels to respective folders
+            for img_file in train_images:
+                # Copy image
+                src_img = os.path.join(source_folder, img_file)
+                dst_img = os.path.join(images_train_dir, img_file)
+                if os.path.exists(src_img):
+                    shutil.copy2(src_img, dst_img)
+
+                # Copy corresponding label file if exists
+                label_file = os.path.splitext(img_file)[0] + '.txt'
+                if label_file in label_files:
+                    src_label = os.path.join(source_folder, label_file)
+                    dst_label = os.path.join(labels_train_dir, label_file)
+                    if os.path.exists(src_label):
+                        shutil.copy2(src_label, dst_label)
+
+            for img_file in val_images:
+                # Copy image
+                src_img = os.path.join(source_folder, img_file)
+                dst_img = os.path.join(images_val_dir, img_file)
+                if os.path.exists(src_img):
+                    shutil.copy2(src_img, dst_img)
+
+                # Copy corresponding label file if exists
+                label_file = os.path.splitext(img_file)[0] + '.txt'
+                if label_file in label_files:
+                    src_label = os.path.join(source_folder, label_file)
+                    dst_label = os.path.join(labels_val_dir, label_file)
+                    if os.path.exists(src_label):
+                        shutil.copy2(src_label, dst_label)
+
+            # 2. NOW GENERATE DATA.YAML
+            success = self.generate_data_yaml_after_split(source_folder, labeling_path)
+
+            if not success:
+                print("Warning: Could not generate data.yaml with class names")
+                return False
+
+            print(f"✓ Dataset split and data.yaml created successfully!")
+            print(f"✓ {len(train_images)} images copied to images/train/")
+            print(f"✓ {len(val_images)} images copied to images/val/")
+            print(f"✓ Dataset structure ready for YOLOv11 training")
+
+            return True
+
+        except Exception as e:
+            print(f"Error in auto_split_and_generate_yaml: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
     def create_dataset_structure(self, folder_path):
         """Create suggested YOLO dataset directory structure"""
         # Create images and labels directories
@@ -510,200 +600,129 @@ You may need to move files to the appropriate train/val folders.
         with open(readme_path, "w", encoding="utf-8") as f:
             f.write(readme_content)
 
-    def auto_split_dataset(self, folder_path):
-        """Automatically split dataset into train/val folders (80/20 split), MOVE files, and generate data.yaml"""
-        # Use fixed random seed for reproducibility
-        random.seed(42)  # Fixed seed - always gives same split
+    def generate_data_yaml_after_split(self, capture_image_path, labeling_path):
+        """Generate data.yaml with class names from labeling folder"""
+        try:
+            # Get class mapping from labeling folder
+            class_map = self.get_class_map_from_labeling_path(labeling_path)
 
-        # Get all BMP files in the folder
-        bmp_files = [f for f in os.listdir(folder_path) if f.lower().endswith('.bmp')]
+            yaml_path = os.path.join(capture_image_path, "data.yaml")
 
-        if not bmp_files:
-            print("No BMP files found in the folder.")
-            return False
+            # Use absolute paths
+            abs_path = os.path.abspath(capture_image_path)
 
-        print(f"Found {len(bmp_files)} BMP files")
+            # Create YAML content
+            yaml_content = f"""# YOLOv11 Dataset Configuration
+# Generated by BMP Annotation Tool
 
-        # Shuffle files randomly (but reproducibly with seed=42)
-        random.shuffle(bmp_files)
-
-        # Split into train and val (80% train, 20% val)
-        train_ratio = 0.8
-        split_index = int(len(bmp_files) * train_ratio)
-        train_files = bmp_files[:split_index]
-        val_files = bmp_files[split_index:]
-
-        print(f"Training set: {len(train_files)} files ({train_ratio:.0%})")
-        print(f"Validation set: {len(val_files)} files ({1 - train_ratio:.0%})")
-
-        # Create destination directories
-        images_train_dir = os.path.join(folder_path, "images", "train")
-        images_val_dir = os.path.join(folder_path, "images", "val")
-        labels_train_dir = os.path.join(folder_path, "labels", "train")
-        labels_val_dir = os.path.join(folder_path, "labels", "val")
-
-        # Ensure directories exist
-        os.makedirs(images_train_dir, exist_ok=True)
-        os.makedirs(images_val_dir, exist_ok=True)
-        os.makedirs(labels_train_dir, exist_ok=True)
-        os.makedirs(labels_val_dir, exist_ok=True)
-
-        # Counter for moved files
-        moved_images = 0
-        moved_labels = 0
-        failed_moves = []
-
-        # MOVE training files
-        for filename in train_files:
-            try:
-                # Move image
-                src_image = os.path.join(folder_path, filename)
-                dst_image = os.path.join(images_train_dir, filename)
-
-                # Move label if exists
-                label_name = os.path.splitext(filename)[0] + ".txt"
-                src_label = os.path.join(folder_path, label_name)
-                dst_label = os.path.join(labels_train_dir, label_name)
-
-                # Move the image file
-                shutil.move(src_image, dst_image)
-                moved_images += 1
-
-                # Move the label file if it exists
-                if os.path.exists(src_label):
-                    shutil.move(src_label, dst_label)
-                    moved_labels += 1
-
-            except Exception as e:
-                failed_moves.append(f"{filename}: {e}")
-
-        # MOVE validation files
-        for filename in val_files:
-            try:
-                # Move image
-                src_image = os.path.join(folder_path, filename)
-                dst_image = os.path.join(images_val_dir, filename)
-
-                # Move label if exists
-                label_name = os.path.splitext(filename)[0] + ".txt"
-                src_label = os.path.join(folder_path, label_name)
-                dst_label = os.path.join(labels_val_dir, label_name)
-
-                # Move the image file
-                shutil.move(src_image, dst_image)
-                moved_images += 1
-
-                # Move the label file if it exists
-                if os.path.exists(src_label):
-                    shutil.move(src_label, dst_label)
-                    moved_labels += 1
-
-            except Exception as e:
-                failed_moves.append(f"{filename}: {e}")
-
-        # Report results
-        print(f"\n✓ Dataset split completed:")
-        print(f"  - MOVED {moved_images} images")
-        print(f"  - MOVED {moved_labels} label files")
-        print(f"  - Training: {len(train_files)} files (80%)")
-        print(f"  - Validation: {len(val_files)} files (20%)")
-        print(f"  - Random seed: 42 (reproducible split)")
-
-        if failed_moves:
-            print(f"\n⚠ Failed to move {len(failed_moves)} files:")
-            for error in failed_moves[:5]:  # Show first 5 errors
-                print(f"  - {error}")
-            if len(failed_moves) > 5:
-                print(f"  - ... and {len(failed_moves) - 5} more")
-
-        # Now generate data.yaml automatically
-        print("\n📄 Generating data.yaml file...")
-        self.generate_data_yaml_after_split(folder_path)
-
-        return True
-
-    def generate_data_yaml_after_split(self, folder_path):
-        """Generate data.yaml file after auto-split"""
-        # Get class names from classes.txt or existing labels
-        class_names = self.get_class_names_from_labels(folder_path)
-
-        yaml_path = os.path.join(folder_path, "data.yaml")
-
-        yaml_content = f"""# YOLOv11 Dataset Configuration
-# Generated by BMP Annotation Tool - Auto Split
-
-# Path to dataset directory (relative or absolute)
-path: {os.path.abspath(folder_path)}  # dataset root dir
-
-# Train and validation images (relative to 'path')
-train: images/train  # train images
-val: images/val      # val images
-test:                # test images (optional)
-
-# Number of classes
-nc: {len(class_names)}
-
-# Class names
-names: {class_names}
+path: {abs_path}
+train: images/train
+val: images/val
+nc: {len(class_map)}
+names:
 """
 
-        with open(yaml_path, "w", encoding="utf-8") as f:
-            f.write(yaml_content)
+            # Add class names in order (0, 1, 2, ...)
+            for class_id in sorted(class_map.keys()):
+                class_name = class_map[class_id]
+                yaml_content += f"  {class_id}: {class_name}\n"
 
-        print(f"✓ Generated data.yaml at: {yaml_path}")
-        print(f"  - Classes: {len(class_names)}")
-        print(f"  - Path: {os.path.abspath(folder_path)}")
-        print(f"  - Train: images/train")
-        print(f"  - Val: images/val")
+            # Write YAML file
+            with open(yaml_path, "w", encoding="utf-8") as f:
+                f.write(yaml_content)
 
-        # Also update classes.txt if needed
-        self.save_class_names_to_file(folder_path, class_names)
+            print(f"✓ Generated data.yaml at: {yaml_path}")
+            print("Class mapping:")
+            for class_id, class_name in sorted(class_map.items()):
+                print(f"  {class_id}: {class_name}")
 
-    def get_class_names_from_labels(self, folder_path):
-        """Extract class names from existing label files"""
-        class_names = set()
+            # Also save class names to classes.txt for reference
+            self.save_class_names_to_file(capture_image_path, class_map)
 
-        # Check labels/train directory
-        labels_train_dir = os.path.join(folder_path, "labels", "train")
-        if os.path.exists(labels_train_dir):
-            for label_file in os.listdir(labels_train_dir):
-                if label_file.endswith('.txt'):
-                    try:
-                        with open(os.path.join(labels_train_dir, label_file), 'r') as f:
-                            for line in f:
-                                parts = line.strip().split()
-                                if parts and len(parts) >= 5:
-                                    class_id = int(float(parts[0]))  # Handle float class IDs
-                                    class_names.add(f"class_{class_id}")
-                    except:
-                        pass
+            return True
 
-        # If no classes found in labels, check classes.txt
-        if not class_names:
-            classes_txt_path = os.path.join(folder_path, "classes.txt")
-            if os.path.exists(classes_txt_path):
+        except Exception as e:
+            print(f"Error generating data.yaml: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    def get_class_map_from_labeling_path(self, labeling_path):
+        """
+        Extract class_id → class_name from filenames like:
+        0_SIP.bmp, 1_piano.bmp, 2_phone.bmp
+        """
+        class_map = {}
+
+        if not os.path.exists(labeling_path):
+            print(f"Labeling path does not exist: {labeling_path}")
+            # Return default mapping if path doesn't exist
+            return {0: "object"}
+
+        print(f"Scanning labeling path: {labeling_path}")
+        print(f"Files found: {os.listdir(labeling_path)}")
+
+        for file in os.listdir(labeling_path):
+            if not file.lower().endswith(('.bmp', '.jpg', '.jpeg', '.png')):
+                continue
+
+            # Remove extension
+            name_without_ext = os.path.splitext(file)[0]
+
+            # Split by underscore to get class_id and class_name
+            # Format: 0_SIP, 1_piano, etc.
+            if '_' in name_without_ext:
                 try:
-                    with open(classes_txt_path, 'r') as f:
-                        class_names = {line.strip() for line in f if line.strip()}
-                except:
-                    pass
+                    # Split only on first underscore in case class_name has underscores
+                    parts = name_without_ext.split('_', 1)
+                    if len(parts) == 2:
+                        cls_id_str = parts[0]
+                        cls_name = parts[1]
 
-        # If still no classes, create default
-        if not class_names:
-            class_names = {"object"}
+                        # Convert class_id to integer
+                        cls_id = int(cls_id_str)
 
-        # Convert to sorted list
-        return sorted(list(class_names))
+                        print(f"Found class mapping: {cls_id} -> {cls_name} (from {file})")
 
-    def save_class_names_to_file(self, folder_path, class_names):
-        """Save class names to classes.txt file"""
+                        # Check for conflicts
+                        if cls_id in class_map and class_map[cls_id] != cls_name:
+                            print(f"⚠️ Warning: Class ID {cls_id} conflict: "
+                                  f"'{class_map[cls_id]}' vs '{cls_name}'")
+                            # Keep the first one found
+                        else:
+                            class_map[cls_id] = cls_name
+
+                except ValueError as e:
+                    print(f"⚠️ Skipping file {file}: Cannot parse class ID - {e}")
+                    continue
+                except Exception as e:
+                    print(f"⚠️ Skipping file {file}: {e}")
+                    continue
+
+        # If no valid files found, use default mapping
+        if not class_map:
+            print("No valid class files found, using default mapping")
+            class_map = {0: "object"}
+
+        # Sort by class_id
+        class_map = dict(sorted(class_map.items()))
+
+        print(f"Final class mapping: {class_map}")
+        return class_map
+
+    def save_class_names_to_file(self, folder_path, class_map):
+        """Save class names in order to classes.txt"""
         classes_txt_path = os.path.join(folder_path, "classes.txt")
 
         with open(classes_txt_path, "w", encoding="utf-8") as f:
-            for i, class_name in enumerate(class_names):
+            for class_id in sorted(class_map.keys()):
+                class_name = class_map[class_id]
                 f.write(f"{class_name}\n")
 
-        print(f"✓ Updated classes.txt with {len(class_names)} classes")
+        print(f"✓ Updated classes.txt with {len(class_map)} classes")
+        print("Classes in order:")
+        for class_id, class_name in sorted(class_map.items()):
+            print(f"  {class_id}: {class_name}")
 
     def display_predictions(self, predictions):
         """Display model predictions on the image"""
@@ -715,19 +734,21 @@ names: {class_names}
         for i, pred in enumerate(predictions):
             bbox = pred.get('bbox', [0, 0, 0, 0])
             confidence = pred.get('confidence', 0.0)
+            class_id = pred.get('class_id', 0)
+            actual_class_name = pred.get('class_name', f'class_{class_id}')  # Get the actual name
 
-            # Use the class_name from prediction
-            class_name = pred.get('class_name', f"class_{pred.get('class_id', 0)}")
+            # Use the actual class name
+            label = f"{actual_class_name} ({confidence:.2f})"  # This will be "PLC (0.99)"
 
             # Create QRectF from bbox
             if len(bbox) >= 4:
                 rect = QRectF(bbox[0], bbox[1], bbox[2] - bbox[0], bbox[3] - bbox[1])
 
-                # Store label WITH confidence
-                label = f"{class_name} ({confidence:.2f})"
-
                 print(f"DEBUG [AnnotationWidget] Prediction {i}:")
+                print(f"  - Class: '{actual_class_name}' (ID: {class_id})")  # Changed this line
                 print(f"  - Storing label as: '{label}'")
+                print(f"  - BBox: {bbox}")
+                print(f"  - Confidence: {confidence:.2f}")
 
                 self.boxes.append((rect, label))
             else:
@@ -812,7 +833,7 @@ names: {class_names}
         for pred in predictions:
             bbox = pred['bbox']  # [x1, y1, x2, y2]
             class_id = pred['class_id']
-            class_name = pred['class_name']
+            class_name = pred.get('class_name', f'class_{class_id}')
             confidence = pred['confidence']
 
             # Format: class_id class_name confidence x1 y1 x2 y2

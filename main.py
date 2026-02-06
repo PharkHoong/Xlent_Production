@@ -3,7 +3,10 @@ import random
 import threading
 import socket
 import time
+import shutil
+import yaml
 from datetime import datetime, timedelta
+from PIL import Image
 from PySide6.QtWidgets import (
     QMainWindow, QFileDialog, QWidget,
     QVBoxLayout, QHBoxLayout,
@@ -16,16 +19,14 @@ from PySide6.QtGui import QKeySequence, QShortcut, QColor, QPixmap, QTextCursor
 from PySide6.QtCore import Signal, QObject, QTimer, Qt, QRectF, QPointF
 from annotator import AnnotationWidget
 
-from PIL import Image
-
 # Import camera capture function
 try:
     from camera import AutoCaptureFlow
 
     CAMERA_AVAILABLE = True
-except ImportError:
+except ImportError as e:
     CAMERA_AVAILABLE = False
-    print("Warning: camera_capture module not found. Camera button will be disabled.")
+    print(f"Warning: camera module not found. Camera button will be disabled. Error: {e}")
 
 
 class CameraSignals(QObject):
@@ -80,6 +81,7 @@ class MainWindow(QMainWindow):
         self.tcp_connected = False
         self.tcp_thread = None
         self.listening_thread = None
+        self.listening_active = False
         self.scan_data_received = ""
         self.last_bounding_box = None  # Store the last drawn bounding box
         self.last_box_label = None  # Store the label of the last box
@@ -118,6 +120,7 @@ class MainWindow(QMainWindow):
         self.progress_dialog = None
         self.prediction_progress_dialog = None
         self.current_model_path = None
+        self.current_model = None
 
         # Add a timer to track bounding box changes
         self.box_tracker_timer = QTimer()
@@ -513,6 +516,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Invalid Input", "Please enter a host address")
             return
 
+        # Close existing connection if any
+        self.disconnect_tcp()
+
         try:
             self.tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.tcp_socket.settimeout(2)
@@ -530,23 +536,31 @@ class MainWindow(QMainWindow):
                 except socket.error as e:
                     self.tcp_signals.connection_status.emit(f"Connection failed: {str(e)}", False)
                     self.tcp_socket = None
+                finally:
+                    # Re-enable button in main thread
+                    QTimer.singleShot(0, lambda: self.labeling_btn.setEnabled(True))
 
             self.tcp_thread = threading.Thread(target=connect_thread, daemon=True)
             self.tcp_thread.start()
 
         except Exception as e:
             self.on_tcp_connection_status(f"Connection error: {str(e)}", False)
+            self.labeling_btn.setEnabled(True)
 
     def disconnect_tcp(self):
         """Close TCP connection"""
+        self.listening_active = False
+        self.tcp_connected = False
+
         if self.tcp_socket:
             try:
+                self.tcp_socket.shutdown(socket.SHUT_RDWR)
                 self.tcp_socket.close()
             except:
                 pass
+            finally:
+                self.tcp_socket = None
 
-        self.tcp_connected = False
-        self.tcp_socket = None
         self.labeling_btn.setText("Image Labeling")
         self.labeling_btn.setStyleSheet("background-color: #795548; color: white; font-weight: bold;")
         self.labeling_btn.setEnabled(True)
@@ -555,9 +569,10 @@ class MainWindow(QMainWindow):
 
     def start_listening(self):
         """Start listening for incoming messages"""
+        self.listening_active = True
 
         def listen_thread():
-            while self.tcp_connected and self.tcp_socket:
+            while self.tcp_connected and self.tcp_socket and self.listening_active:
                 try:
                     data = self.tcp_socket.recv(1024)
                     if data:
@@ -701,15 +716,6 @@ class MainWindow(QMainWindow):
             # Update status label
             self.status_label.setText(f"Auto-saved: {filename}")
 
-            # Send confirmation back via TCP
-            # if self.tcp_connected and self.tcp_socket:
-            #     try:
-            #         response = f"AUTO_CROP_SAVED: {filename}"
-            #         self.tcp_socket.sendall(response.encode('utf-8'))
-            #         self.tcp_signals.message_sent.emit(response)
-            #     except socket.error as e:
-            #         self.update_tcp_messages(f"[Error] Failed to send confirmation: {str(e)}")
-
             # Show brief notification
             QTimer.singleShot(100, lambda: self.show_auto_crop_notification(filename, label_name, sanitized_text))
 
@@ -782,78 +788,47 @@ class MainWindow(QMainWindow):
 
     # ---------- COMBINED TRAIN MODEL FUNCTION ----------
     def train_model(self):
-        """Combined function: Auto split + Generate data.yaml + Train model"""
+        """Combined function: Auto prepare dataset + Train YOLOv11 model"""
         if self.is_training:
             QMessageBox.warning(self, "Training in Progress",
                                 "A training session is already in progress.")
             return
 
         try:
-            # Use the specific path for dataset
-            folder_path = self.capture_image_path
-
-            # Check if folder exists
+            # ---------------- Step 1: Prepare dataset ----------------
+            folder_path = self.capture_image_path  # where train/val images live
             if not os.path.exists(folder_path):
                 QMessageBox.warning(self, "Folder Not Found",
-                                    f"Dataset folder not found:\n{folder_path}\n\n"
-                                    f"Please make sure the Capture Image folder exists.")
+                                    f"Dataset folder not found:\n{folder_path}")
                 return
 
-            # Check if we need to run auto split
+            # Auto-split and generate data.yaml using labeled files
+            self.status_label.setText("Preparing dataset...")
+            success = self.viewer.auto_split_and_generate_yaml(
+                self.capture_image_path,
+                self.labeling_path
+            )
+
+            if not success:
+                QMessageBox.warning(self, "Dataset Preparation Failed",
+                                    "No valid labeled files found or no images in capture path.")
+                return
+            self.status_label.setText("Dataset ready!")
+            QTimer.singleShot(2000, lambda: self.status_label.setText("Ready"))
+
+            # Check that we have training images
             images_train_dir = os.path.join(folder_path, "images", "train")
-            yaml_path = os.path.join(folder_path, "data.yaml")
+            train_images = [f for f in os.listdir(images_train_dir)
+                            if f.lower().endswith(('.bmp', '.jpg', '.jpeg', '.png'))]
+            if len(train_images) == 0:
+                QMessageBox.warning(self, "No Training Images",
+                                    f"No images found in training folder: {images_train_dir}")
+                return
 
-            need_auto_split = False
-            if not os.path.exists(images_train_dir):
-                need_auto_split = True
-
-            if not os.path.exists(yaml_path):
-                need_auto_split = True
-
-            if need_auto_split:
-                # Ask user if they want to auto split
-                reply = QMessageBox.question(
-                    self, "Auto Split Required",
-                    f"Dataset structure not found in:\n{folder_path}\n\n"
-                    f"Do you want to automatically:\n"
-                    f"1. 📊 Split dataset (80% train, 20% val)\n"
-                    f"2. 📁 Create organized folders\n"
-                    f"3. 📄 Generate data.yaml\n\n"
-                    f"This will organize your dataset for YOLO training.",
-                    QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
-                )
-
-                if reply != QMessageBox.Yes:
-                    return
-
-                # Run auto split
-                self.status_label.setText("Running auto split...")
-
-                success = self.viewer.auto_split_dataset(folder_path)
-
-                if not success:
-                    QMessageBox.warning(self, "Auto Split Failed",
-                                        "Failed to prepare dataset. Please check your files.")
-                    return
-
-                self.status_label.setText("Auto split completed!")
-                QTimer.singleShot(2000, lambda: self.status_label.setText("Ready"))
-
-            # Now check if we have training data
-            if os.path.exists(images_train_dir):
-                train_images = [f for f in os.listdir(images_train_dir)
-                                if f.lower().endswith(('.bmp', '.jpg', '.jpeg', '.png'))]
-
-                if len(train_images) == 0:
-                    QMessageBox.warning(self, "No Training Images",
-                                        f"No images found in training folder: {images_train_dir}")
-                    return
-
-            # Ask for training parameters
+            # ---------------- Step 2: Ask for training parameters ----------------
             epochs, ok = QInputDialog.getInt(
                 self, "Training Epochs",
-                f"Enter number of training epochs (recommended: 50-300):\n"
-                f"Dataset: {os.path.basename(folder_path)}",
+                "Enter number of training epochs (recommended: 50-300):",
                 100, 10, 1000, 1
             )
             if not ok:
@@ -861,10 +836,7 @@ class MainWindow(QMainWindow):
 
             batch_size, ok = QInputDialog.getInt(
                 self, "Batch Size",
-                "Enter batch size:\n"
-                "• 4-8 for low GPU memory\n"
-                "• 16-32 for sufficient GPU memory\n"
-                "• 1-4 for CPU training",
+                "Enter batch size:\n• 4-8 for low GPU memory\n• 16-32 for sufficient GPU\n• 1-4 for CPU",
                 16, 1, 64, 1
             )
             if not ok:
@@ -872,12 +844,7 @@ class MainWindow(QMainWindow):
 
             model_size, ok = QInputDialog.getItem(
                 self, "Model Size",
-                "Select YOLOv11 model size:\n"
-                "• nano: Fastest, less accurate\n"
-                "• small: Good balance\n"
-                "• medium: Better accuracy\n"
-                "• large: High accuracy\n"
-                "• xlarge: Best accuracy, slowest",
+                "Select YOLOv11 model size:",
                 ["nano (yolo11n)", "small (yolo11s)", "medium (yolo11m)", "large (yolo11l)", "xlarge (yolo11x)"],
                 1, False
             )
@@ -893,68 +860,46 @@ class MainWindow(QMainWindow):
             }
             model_name = model_map[model_size]
 
-            # Use the specific path for saving models
+            # Ensure model save folder exists
             save_dir = self.model_path
-
-            # Create the Model folder if it doesn't exist
             os.makedirs(save_dir, exist_ok=True)
 
+            # ---------------- Step 3: Show training summary ----------------
             import torch
-            has_cuda = torch.cuda.is_available()
-            device_info = "GPU (CUDA)" if has_cuda else "CPU"
-
-            if has_cuda:
-                gpu_name = torch.cuda.get_device_name(0)
-                device_info = f"GPU: {gpu_name}"
-            else:
-                device_info = "CPU"
-
-
-            time_per_epoch = 30 if not has_cuda else 5
-            estimated_minutes = int((epochs * time_per_epoch) / 60)
-
-            # Show training summary
+            device_info = "GPU (CUDA)" if torch.cuda.is_available() else "CPU"
             summary = (
                 f"🚀 Training Configuration:\n\n"
                 f"📁 Dataset: {os.path.basename(folder_path)}\n"
-                f"📊 data.yaml: {yaml_path}\n"
+                f"📊 data.yaml: {os.path.join(folder_path, 'data.yaml')}\n"
                 f"🔄 Epochs: {epochs}\n"
                 f"📦 Batch Size: {batch_size}\n"
                 f"🤖 Model: {model_name}\n"
                 f"⚡ Device: {device_info}\n"
-                f"💾 Save to: {save_dir}\n\n"
-                f"⏱ Estimated time: {estimated_minutes} minutes\n"
+                f"💾 Save to: {save_dir}\n"
             )
-
             reply = QMessageBox.question(
-                self, "Confirm Training",
-                f"{summary}Start training?",
+                self, "Confirm Training", f"{summary}\nStart training?",
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No
             )
-
             if reply != QMessageBox.Yes:
                 return
 
-            # Create progress dialog with better labels
+            # ---------------- Step 4: Start training ----------------
             self.progress_dialog = QProgressDialog("Initializing training...", "Cancel Training", 0, epochs * 2, self)
             self.progress_dialog.setWindowTitle(f"Training YOLOv11 - {os.path.basename(folder_path)}")
             self.progress_dialog.setWindowModality(Qt.WindowModal)
-            self.progress_dialog.setMinimumDuration(0)
             self.progress_dialog.canceled.connect(self.cancel_training)
-
-            # Set initial values
             self.progress_dialog.setValue(0)
-            self.progress_dialog.setLabelText(f"Initializing training...")
 
             self.is_training = True
             self.training_start_time = datetime.now()
             self.current_epoch = 0
             self.total_epochs = epochs
 
-            # Start training in a separate thread
+            # Start training thread
             thread = threading.Thread(
                 target=self.run_training_with_monitoring,
-                args=(yaml_path, epochs, batch_size, model_name, save_dir),
+                args=(os.path.join(folder_path, "data.yaml"), epochs, batch_size, model_name, save_dir),
                 daemon=True
             )
             thread.start()
@@ -1511,15 +1456,22 @@ class MainWindow(QMainWindow):
                             box = boxes.xyxy[i].cpu().numpy()
                             conf = float(boxes.conf[i].cpu().numpy()) if boxes.conf is not None else 0.0
                             cls = int(boxes.cls[i].cpu().numpy()) if boxes.cls is not None else 0
-                            class_name = f"class_{cls}"
+
+                            # Get actual class name from model
+                            actual_class_name = ""
                             if hasattr(result, 'names') and result.names:
-                                class_name = result.names.get(cls, f"class_{cls}")
+                                actual_class_name = result.names.get(cls, f"class_{cls}")
+                            else:
+                                actual_class_name = f"class_{cls}"
+
+                            print(f"DEBUG [run_prediction]: Class ID {cls} → '{actual_class_name}'")  # ADD THIS LINE
 
                             predictions.append({
                                 'bbox': box.tolist(),
                                 'confidence': conf,
                                 'class_id': cls,
-                                'class_name': class_name
+                                'class_name': actual_class_name,  # Use actual name
+                                'class_name_original': actual_class_name  # Add this for clarity
                             })
                         except Exception as e:
                             print(f"Error processing detection {i}: {e}")
@@ -1548,68 +1500,6 @@ class MainWindow(QMainWindow):
             error_msg = f"Prediction failed:\n{str(e)}"
             print(error_details)
             self.prediction_signals.finished.emit(False, error_msg, [])
-        finally:
-            self.is_predicting = False
-
-    def run_batch_prediction(self, folder_path, image_files):
-        """Run prediction on a batch of images"""
-        try:
-            from ultralytics import YOLO
-            import torch
-
-            device = 'cuda' if torch.cuda.is_available() else 'cpu'
-
-            output_dir = os.path.join(folder_path, "predictions")
-            os.makedirs(output_dir, exist_ok=True)
-
-            total_images = len(image_files)
-            processed = 0
-
-            for i, image_file in enumerate(image_files):
-                if not self.is_predicting:
-                    break
-
-                image_path = os.path.join(folder_path, image_file)
-
-                self.prediction_signals.progress.emit(
-                    int((i / total_images) * 100),
-                    f"Processing {i + 1}/{total_images}: {image_file}"
-                )
-
-                results = self.current_model.predict(
-                    source=image_path,
-                    conf=0.25,
-                    iou=0.45,
-                    device=device,
-                    save=True,
-                    project=output_dir,
-                    name="",
-                    exist_ok=True,
-                    save_txt=True,
-                    save_conf=True,
-                    verbose=False
-                )
-
-                processed += 1
-
-            if self.is_predicting:
-                self.prediction_signals.finished.emit(
-                    True,
-                    f"Batch prediction completed!\n\n"
-                    f"Processed: {processed}/{total_images} images\n"
-                    f"Saved to: {output_dir}",
-                    []
-                )
-            else:
-                self.prediction_signals.finished.emit(
-                    False,
-                    f"Batch prediction cancelled.\n\n"
-                    f"Processed: {processed}/{total_images} images",
-                    []
-                )
-
-        except Exception as e:
-            self.prediction_signals.finished.emit(False, f"Batch prediction failed:\n{str(e)}", [])
         finally:
             self.is_predicting = False
 
@@ -1718,37 +1608,6 @@ class MainWindow(QMainWindow):
             self.is_predicting = False
             self.status_label.setText("Prediction cancelled")
             QMessageBox.information(self, "Prediction Cancelled", "Prediction has been cancelled.")
-
-    def on_training_progress(self, progress, status, time_remaining):
-        """Update progress dialog"""
-        if self.progress_dialog:
-            self.progress_dialog.setValue(progress)
-            self.progress_dialog.setLabelText(f"{status}\nTime remaining: {time_remaining}")
-            self.status_label.setText(f"Training: {status}")
-
-    def on_training_finished(self, success, message):
-        """Handle training completion"""
-        self.is_training = False
-
-        if self.progress_dialog:
-            self.progress_dialog.close()
-            self.progress_dialog = None
-
-        if success:
-            QMessageBox.information(self, "Training Complete", message)
-            self.status_label.setText("Training completed successfully!")
-        else:
-            QMessageBox.critical(self, "Training Failed", message)
-            self.status_label.setText("Training failed")
-
-        QTimer.singleShot(5000, lambda: self.status_label.setText("Ready"))
-
-    def cancel_training(self):
-        """Cancel the training process"""
-        if self.is_training:
-            self.is_training = False
-            self.status_label.setText("Training cancelled")
-            QMessageBox.information(self, "Training Cancelled", "Training has been cancelled.")
 
     def capture_from_camera(self):
         """Capture from camera and save to Capture Image folder"""
