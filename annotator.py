@@ -299,6 +299,11 @@ class AnnotationWidget(QWidget):
                     label = self.get_current_label()
                     self.boxes.append((rect, label))
                     self.selected_index = len(self.boxes) - 1
+
+                    # Auto-save (optional - can be removed if you prefer manual save)
+                    if hasattr(self, 'current_image_path'):
+                        self.save_annotations(self.current_image_path)
+
                 self.drawing = False
 
             self.dragging = False

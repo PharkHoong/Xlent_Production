@@ -3,8 +3,6 @@ import random
 import threading
 import socket
 import time
-import shutil
-import yaml
 from datetime import datetime, timedelta
 from PIL import Image
 from PySide6.QtWidgets import (
@@ -13,7 +11,7 @@ from PySide6.QtWidgets import (
     QComboBox, QPushButton, QInputDialog,
     QMessageBox, QProgressDialog, QLabel,
     QLineEdit, QSpinBox, QStackedWidget,
-    QGroupBox, QScrollArea, QTextEdit,
+    QGroupBox, QScrollArea, QTextEdit, QCheckBox
 )
 from PySide6.QtGui import QKeySequence, QShortcut, QColor, QPixmap, QTextCursor
 from PySide6.QtCore import Signal, QObject, QTimer, Qt, QRectF, QPointF
@@ -58,7 +56,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         self.capture_folder = None
         super().__init__()
-        self.setWindowTitle("BMP Annotation Tool with Camera, Training & Auto TCP Scan")
+        self.setWindowTitle("BMP Annotation Tool with Camera, Training & Label ID Scan")
         self.resize(1400, 900)
 
         # Define base paths
@@ -67,6 +65,7 @@ class MainWindow(QMainWindow):
         self.capture_image_prediction_path = f"{self.base_path}\\Capture Prediction"
         self.model_path = f"{self.base_path}\\Model"
         self.labeling_path = f"{self.base_path}\\Labeling"
+        self.image_boxes = {}
 
         # Start with 0 as the first label
         self.labels = ["0"]
@@ -86,6 +85,7 @@ class MainWindow(QMainWindow):
         self.last_bounding_box = None  # Store the last drawn bounding box
         self.last_box_label = None  # Store the label of the last box
         self.tcp_received_text = ""  # Store the latest TCP received text
+        self.selected_class_for_prediction = None  # Add this line
 
         # Create necessary folders if they don't exist
         self.create_required_folders()
@@ -391,6 +391,24 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+P"), self, activated=self.predict_current_image)
         QShortcut(QKeySequence("Ctrl+A"), self, activated=self.auto_add_label)
         QShortcut(QKeySequence("Ctrl+D"), self, activated=self.auto_tcp_scan)
+
+        # Add to your toolbar or right column
+        self.class_filter_checkbox = QCheckBox("Filter by Class")
+        self.class_filter_combo = QComboBox()
+        self.class_filter_combo.setEnabled(False)
+
+        self.class_filter_checkbox.stateChanged.connect(
+            lambda state: self.class_filter_combo.setEnabled(state == Qt.Checked)
+        )
+
+        # Add to your layout
+        filter_layout = QHBoxLayout()
+        filter_layout.addWidget(self.class_filter_checkbox)
+        filter_layout.addWidget(self.class_filter_combo)
+        filter_layout.addStretch()
+
+        # Add this to your main layout somewhere
+        layout.addLayout(filter_layout)
 
     def create_required_folders(self):
         """Create all required folders if they don't exist"""
@@ -1372,6 +1390,151 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load model:\n{str(e)}")
 
+    def predict_current_image_with_filter(self):
+        """Run inference with class filter"""
+        if not hasattr(self, 'current_model') or self.current_model is None:
+            QMessageBox.warning(self, "No Model Loaded",
+                                "Please load a trained model first.")
+            return
+
+        if not hasattr(self, 'image_path') or not self.image_path:
+            QMessageBox.warning(self, "No Image",
+                                "Please open an image first.")
+            return
+
+        try:
+            self.prediction_progress_dialog = QProgressDialog(
+                f"Running inference for class {self.selected_class_for_prediction}..."
+                if self.selected_class_for_prediction is not None
+                else "Running inference for all classes...",
+                "Cancel", 0, 100, self
+            )
+            self.prediction_progress_dialog.setWindowTitle("Running Prediction")
+            self.prediction_progress_dialog.setWindowModality(Qt.WindowModal)
+            self.prediction_progress_dialog.setMinimumDuration(0)
+            self.prediction_progress_dialog.canceled.connect(self.cancel_prediction)
+
+            self.is_predicting = True
+
+            thread = threading.Thread(
+                target=self.run_prediction_with_filter,
+                args=(self.image_path, self.selected_class_for_prediction),
+                daemon=True
+            )
+            thread.start()
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to start prediction:\n{str(e)}")
+            self.is_predicting = False
+
+    def run_prediction_with_filter(self, image_path, class_filter):
+        """Run prediction with class filter"""
+        try:
+            from ultralytics import YOLO
+            import torch
+
+            self.prediction_signals.progress.emit(10, "Loading model...")
+
+            if not hasattr(self, 'current_model') or self.current_model is None:
+                if hasattr(self, 'current_model_path') and self.current_model_path:
+                    self.current_model = YOLO(self.current_model_path)
+                else:
+                    self.prediction_signals.finished.emit(False, "No model loaded", [])
+                    return
+
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+            # Show which class we're detecting
+            if class_filter is not None:
+                class_names = self.current_model.names if hasattr(self.current_model, 'names') else {}
+                class_name = class_names.get(class_filter, f"class_{class_filter}")
+                self.prediction_signals.progress.emit(30,
+                                                      f"Detecting class {class_filter} ({class_name}) on {device}...")
+            else:
+                self.prediction_signals.progress.emit(30, f"Detecting all classes on {device}...")
+
+            # Run prediction with class filter
+            results = self.current_model.predict(
+                source=image_path,
+                conf=0.25,
+                iou=0.45,
+                device=device,
+                save=False,
+                save_txt=False,
+                save_conf=True,
+                show=False,
+                verbose=False,
+                classes=[class_filter] if class_filter is not None else None  # This filters by class
+            )
+
+            self.prediction_signals.progress.emit(70, "Processing results...")
+
+            predictions = []
+            if results and len(results) > 0:
+                result = results[0]
+
+                if hasattr(result, 'boxes') and result.boxes is not None:
+                    boxes = result.boxes
+
+                    if hasattr(boxes, 'xyxy') and boxes.xyxy is not None:
+                        num_detections = len(boxes.xyxy)
+                    else:
+                        num_detections = 0
+
+                    for i in range(num_detections):
+                        try:
+                            box = boxes.xyxy[i].cpu().numpy()
+                            conf = float(boxes.conf[i].cpu().numpy()) if boxes.conf is not None else 0.0
+                            cls = int(boxes.cls[i].cpu().numpy()) if boxes.cls is not None else 0
+                            class_name = f"class_{cls}"
+                            if hasattr(result, 'names') and result.names:
+                                class_name = result.names.get(cls, f"class_{cls}")
+
+                            predictions.append({
+                                'bbox': box.tolist(),
+                                'confidence': conf,
+                                'class_id': cls,
+                                'class_name': class_name
+                            })
+                        except Exception as e:
+                            print(f"Error processing detection {i}: {e}")
+                            continue
+
+            output_dir = os.path.join(os.path.dirname(image_path), "predictions")
+            os.makedirs(output_dir, exist_ok=True)
+
+            output_filename = f"pred_{os.path.basename(image_path)}"
+            output_path = os.path.join(output_dir, output_filename)
+
+            if results and len(results) > 0:
+                result.save(filename=output_path)
+
+            self.prediction_signals.progress.emit(90, "Saving results...")
+
+            self.viewer.display_predictions(predictions)
+
+            # Show summary message
+            if class_filter is not None:
+                class_names = self.current_model.names if hasattr(self.current_model, 'names') else {}
+                class_name = class_names.get(class_filter, f"class_{class_filter}")
+                message = f"Found {len(predictions)} objects of class {class_filter} ({class_name})"
+            else:
+                message = f"Found {len(predictions)} objects"
+
+            self.prediction_signals.progress.emit(100, "Done!")
+            self.prediction_signals.finished.emit(True, message, predictions)
+            self.prediction_signals.image_ready.emit(output_path)
+
+        except Exception as e:
+            import traceback
+            error_details = traceback.format_exc()
+            error_msg = f"Prediction failed:\n{str(e)}"
+            print(error_details)
+            self.prediction_signals.finished.emit(False, error_msg, [])
+        finally:
+            self.is_predicting = False
+
+
     def predict_current_image(self):
         """Run inference on the current image"""
         if not hasattr(self, 'current_model') or self.current_model is None:
@@ -1383,6 +1546,11 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No Image",
                                 "Please open an image first.")
             return
+
+        # Check if class filter is enabled
+        class_filter = None
+        if self.class_filter_checkbox.isChecked():
+            class_filter = self.class_filter_combo.currentData()  # Store class ID as data
 
         try:
             self.prediction_progress_dialog = QProgressDialog(
@@ -1406,8 +1574,8 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Error", f"Failed to start prediction:\n{str(e)}")
             self.is_predicting = False
 
-    def run_prediction(self, image_path):
-        """Run prediction on a single image"""
+    def run_prediction(self, image_path, class_filter=None):
+        """Run prediction on a single image with optional class filter"""
         try:
             from ultralytics import YOLO
             import torch
@@ -1423,8 +1591,13 @@ class MainWindow(QMainWindow):
 
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-            self.prediction_signals.progress.emit(30, f"Running inference on {device}...")
+            # Filter by class if specified
+            if class_filter is not None:
+                self.prediction_signals.progress.emit(30, f"Detecting class {class_filter} on {device}...")
+            else:
+                self.prediction_signals.progress.emit(30, f"Detecting all classes on {device}...")
 
+            # Add class filter to prediction parameters
             results = self.current_model.predict(
                 source=image_path,
                 conf=0.25,
@@ -1434,7 +1607,8 @@ class MainWindow(QMainWindow):
                 save_txt=False,
                 save_conf=True,
                 show=False,
-                verbose=False
+                verbose=False,
+                classes=[class_filter] if class_filter is not None else None  # Add class filter
             )
 
             self.prediction_signals.progress.emit(70, "Processing results...")
@@ -1652,6 +1826,67 @@ class MainWindow(QMainWindow):
                 "Please load a trained YOLO model before using Capture & Predict."
             )
             return
+
+        # Ask which class to detect
+        from PySide6.QtWidgets import QDialog, QVBoxLayout, QRadioButton, QPushButton, QButtonGroup
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Select Detection Mode")
+        dialog.setModal(True)
+
+        layout = QVBoxLayout()
+
+        # Get class names from model
+        class_names = {}
+        if hasattr(self.current_model, 'names'):
+            class_names = self.current_model.names
+
+        layout.addWidget(QLabel("Select detection mode:"))
+
+        # Create radio buttons
+        all_classes_radio = QRadioButton("Detect All Classes")
+        all_classes_radio.setChecked(True)
+        layout.addWidget(all_classes_radio)
+
+        # Add radio buttons for each class
+        class_radios = {}
+        button_group = QButtonGroup()
+
+        if class_names:
+            layout.addWidget(QLabel("\nOr detect specific class:"))
+            for class_id, class_name in sorted(class_names.items()):
+                radio = QRadioButton(f"Class {class_id}: {class_name}")
+                class_radios[class_id] = radio
+                button_group.addButton(radio)
+                layout.addWidget(radio)
+
+        # Buttons
+        button_box = QHBoxLayout()
+        ok_btn = QPushButton("OK")
+        cancel_btn = QPushButton("Cancel")
+
+        ok_btn.clicked.connect(dialog.accept)
+        cancel_btn.clicked.connect(dialog.reject)
+
+        button_box.addWidget(ok_btn)
+        button_box.addWidget(cancel_btn)
+        layout.addLayout(button_box)
+
+        dialog.setLayout(layout)
+
+        if dialog.exec() != QDialog.Accepted:
+            return
+
+        # Determine which class to detect
+        self.selected_class_for_prediction = None  # Reset
+        if not all_classes_radio.isChecked():
+            for class_id, radio in class_radios.items():
+                if radio.isChecked():
+                    self.selected_class_for_prediction = class_id
+                    break
+
+        print(f"DEBUG: Will detect class: {self.selected_class_for_prediction}")
+
         # Use the SAME path for both cameras
         self.capture_folder_2 = self.capture_image_prediction_path
 
@@ -1713,8 +1948,11 @@ class MainWindow(QMainWindow):
             self.current_index = self.image_files.index(image_path)
             self.load_current_image()
 
-            # Auto-run prediction
-            QTimer.singleShot(500, self.predict_current_image)
+            # Auto-run prediction with selected class
+            # You'll need to store the selected_class somewhere
+            # Or pass it through the signal
+            # Auto-run prediction with class filter
+            QTimer.singleShot(500, self.predict_current_image_with_filter)
 
         else:
             QMessageBox.critical(
@@ -1768,8 +2006,58 @@ class MainWindow(QMainWindow):
         self.current_index = 0
         self.load_current_image()
 
+        # Load existing annotations for all images
+        self.load_all_existing_annotations()
+
         # Update status
         self.status_label.setText(f"Loaded {len(self.image_files)} images from Capture Image folder")
+
+    def load_all_existing_annotations(self):
+        """Load all existing YOLO annotations into memory"""
+        print("Loading existing annotations...")
+        for image_path in self.image_files:
+            # Check if YOLO annotation file exists
+            yolo_path = os.path.splitext(image_path)[0] + ".txt"
+            if os.path.exists(yolo_path):
+                try:
+                    # Load image to get dimensions
+                    from PIL import Image
+                    img = Image.open(image_path)
+                    img_width, img_height = img.size
+
+                    boxes = []
+                    with open(yolo_path, 'r') as f:
+                        for line in f:
+                            parts = line.strip().split()
+                            if len(parts) >= 5:
+                                class_id = int(parts[0])
+                                x_center = float(parts[1])
+                                y_center = float(parts[2])
+                                width = float(parts[3])
+                                height = float(parts[4])
+
+                                # Convert YOLO format to pixel coordinates
+                                x1 = (x_center - width / 2) * img_width
+                                y1 = (y_center - height / 2) * img_height
+                                x2 = (x_center + width / 2) * img_width
+                                y2 = (y_center + height / 2) * img_height
+
+                                # Create QRectF
+                                rect = QRectF(x1, y1, x2 - x1, y2 - y1)
+
+                                # Store label (use class_id as label)
+                                label = str(class_id)
+
+                                boxes.append((rect, label))
+
+                    if boxes:
+                        self.image_boxes[image_path] = boxes
+                        print(f"  Loaded {len(boxes)} boxes from {os.path.basename(yolo_path)}")
+
+                except Exception as e:
+                    print(f"Error loading annotation for {image_path}: {e}")
+
+        print(f"✓ Total images with annotations: {len(self.image_boxes)}")
 
     def load_current_image(self):
         """Load the current image into the viewer"""
@@ -1777,6 +2065,9 @@ class MainWindow(QMainWindow):
         self.viewer.boxes.clear()
         self.viewer.load_image(path)
         self.image_path = path
+
+        if path in self.image_boxes:
+            self.viewer.boxes = self.image_boxes[path].copy()
 
         self.setWindowTitle(
             f"BMP Annotation Tool – {os.path.basename(path)} "
@@ -1786,11 +2077,16 @@ class MainWindow(QMainWindow):
         # Update image info label
         self.image_info_label.setText(f"{os.path.basename(path)} ({self.current_index + 1}/{len(self.image_files)})")
 
+        self.image_info_label.setText(f"{os.path.basename(path)} ({self.current_index + 1}/{len(self.image_files)})")
+
+        # Force update
+        self.viewer.update()
+
     def next_image(self):
         """Navigate to next image"""
         if self.current_index < 0:
             return
-        self.save_current()
+        self.save_current()  # This saves boxes
         if self.current_index < len(self.image_files) - 1:
             self.current_index += 1
             self.load_current_image()
@@ -1799,7 +2095,7 @@ class MainWindow(QMainWindow):
         """Navigate to previous image"""
         if self.current_index < 0:
             return
-        self.save_current()
+        self.save_current()  # This saves boxes
         if self.current_index > 0:
             self.current_index -= 1
             self.load_current_image()
@@ -1814,6 +2110,8 @@ class MainWindow(QMainWindow):
         """Save annotations for current image in YOLO format"""
         if hasattr(self, "image_path") and self.image_path:
             self.viewer.save_annotations(self.image_path)
+            if hasattr(self.viewer, 'boxes'):
+                self.image_boxes[self.image_path] = self.viewer.boxes.copy()
 
     def closeEvent(self, event):
         """Handle window close event"""

@@ -70,7 +70,7 @@ def AutoCaptureFlow(callback=None):
         print(f"Connecting to camera at {cam_ip}...\n")
 
     # Step 2: Open device
-    print("[Step 2/6] Opening device...")
+
     reVal = m_currentCam.SciCam_CreateDevice(m_currentDeviceInfo)
     if reVal != SCI_CAMERA_OK:
         msg = f"ERROR: Create device failed, error code: {reVal}"
@@ -87,6 +87,9 @@ def AutoCaptureFlow(callback=None):
             callback(False, msg, None)
         return False
     print("Device opened successfully!\n")
+
+    #set parameter xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxvalue
+    m_currentCam.SciCam_SetFloatValueEx(0, "ExposureTime",10000)
 
     # Step 3: Start grabbing
     print("[Step 3/6] Starting grabbing...")
