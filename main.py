@@ -1788,6 +1788,8 @@ class MainWindow(QMainWindow):
         # Always use this specific path
         self.capture_folder = self.capture_image_path
 
+        self.save_current()
+
         os.makedirs(self.capture_folder, exist_ok=True)
 
         self.capture_btn.setEnabled(False)
@@ -1826,6 +1828,8 @@ class MainWindow(QMainWindow):
                 "Please load a trained YOLO model before using Capture & Predict."
             )
             return
+
+        self.save_current()
 
         # Ask which class to detect
         from PySide6.QtWidgets import QDialog, QVBoxLayout, QRadioButton, QPushButton, QButtonGroup
