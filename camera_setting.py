@@ -2,7 +2,6 @@ import sys
 import os
 import ctypes
 import time
-import numpy as np
 from datetime import datetime
 from typing import Optional, List
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
@@ -13,8 +12,8 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                                QProgressBar, QCheckBox, QFrame, QTreeWidget,
                                QTreeWidgetItem, QFileDialog, QDialog,
                                QDialogButtonBox, QFormLayout, QCheckBox, QComboBox)
-from PySide6.QtCore import Qt, QTimer, Signal, QThread, Slot, QSize, QBuffer
-from PySide6.QtGui import QFont, QColor, QPalette, QBrush, QImage, QPixmap, QPainter, QPen
+from PySide6.QtCore import Qt, QTimer, Signal, QThread, Slot
+from PySide6.QtGui import QFont, QColor, QPalette, QBrush
 
 # Import the GetEnumName function from the original console script
 from SciCam_class import *
@@ -90,335 +89,6 @@ def GetNodeValueStr(camera, xmlType, node):
         strVal = f"Error: {str(e)}"
 
     return strVal
-
-
-def decode_pixel_type(pixel_type):
-    """Decode pixel type from integer value"""
-    # Try to get enum name
-    enum_name = GetEnumName(SciCamPixelType, pixel_type)
-    if enum_name:
-        return enum_name
-
-    # If not found in enum, try to decode common values
-    pixel_formats = {
-        0x01080001: "Mono8",
-        0x01100001: "Mono16",
-        0x01080003: "BayerRG8",
-        0x01080004: "BayerGR8",
-        0x01080005: "BayerGB8",
-        0x01080006: "BayerBG8",
-        0x01100003: "BayerRG16",
-        0x01100004: "BayerGR16",
-        0x01100005: "BayerGB16",
-        0x01100006: "BayerBG16",
-        0x02180003: "RGB8",
-        0x02100003: "RGB16",
-        0x1080001: "BayerRG8 (0x1080001)",  # Your specific format
-    }
-
-    return pixel_formats.get(pixel_type, f"Unknown (0x{pixel_type:08x})")
-
-
-def convert_payload_to_qimage_robust(payload_data):
-    """Robust conversion using SDK's ConvertImage function properly"""
-    if payload_data is None:
-        return None
-
-    try:
-        # Get the raw payload pointer
-        ppayload = payload_data.get('payload')
-        if not ppayload:
-            print("No payload pointer")
-            return None
-
-        # Get payload attribute
-        payloadAttribute = payload_data.get('attribute')
-        if not payloadAttribute:
-            print("No payload attribute")
-            return None
-
-        width = payloadAttribute.imgAttr.width
-        height = payloadAttribute.imgAttr.height
-        pixel_type = payloadAttribute.imgAttr.pixelType
-
-        print(f"Image: {width}x{height}, Pixel type: {decode_pixel_type(pixel_type)} (0x{pixel_type:08x})")
-
-        if width <= 0 or height <= 0:
-            print(f"Invalid dimensions: {width}x{height}")
-            return create_placeholder_image(width, height, f"Invalid dimensions")
-
-        # Get image data pointer
-        imgData = ctypes.c_void_p()
-        reVal = SciCam_Payload_GetImage(ppayload, imgData)
-
-        if reVal != SCI_CAMERA_OK:
-            print(f"Failed to get image data: {reVal}")
-            return create_placeholder_image(width, height, f"GetImage failed: {reVal}")
-
-        # Try different conversion strategies
-        img_attr = payloadAttribute.imgAttr
-
-        # List of formats to try in order of preference
-        target_formats = [
-            (SciCamPixelType.RGB8, QImage.Format.Format_RGB888, 3, "RGB8"),
-            (SciCamPixelType.Mono8, QImage.Format.Format_Grayscale8, 1, "Mono8"),
-            (SciCamPixelType.BGR8, QImage.Format.Format_BGR888, 3, "BGR8"),
-        ]
-
-        # First try to get the actual pixel format from the SDK if possible
-        # Sometimes the SDK provides direct access to the raw buffer
-        reVal = SCI_CAMERA_OK
-        dstImgSize = ctypes.c_int(0)
-
-        # Try each format
-        success = False
-        qimage = None
-
-        for target_format, qimage_format, bytes_per_pixel, format_name in target_formats:
-            try:
-                # Check if conversion is possible
-                reVal = SciCam_Payload_ConvertImage(img_attr, imgData, target_format, None, dstImgSize, True)
-
-                if reVal == SCI_CAMERA_OK:
-                    buffer_size = dstImgSize.value
-                    print(f"{format_name} conversion possible, buffer size: {buffer_size}")
-
-                    if buffer_size > 0:
-                        pDstData = (ctypes.c_ubyte * buffer_size)()
-
-                        # Perform the conversion
-                        reVal = SciCam_Payload_ConvertImage(img_attr, imgData, target_format, pDstData, dstImgSize,
-                                                            True)
-
-                        if reVal == SCI_CAMERA_OK:
-                            # Create QImage
-                            if bytes_per_pixel == 1:
-                                qimage = QImage(pDstData, width, height, width, qimage_format)
-                            elif bytes_per_pixel == 3:
-                                qimage = QImage(pDstData, width, height, width * 3, qimage_format)
-
-                            if qimage and not qimage.isNull():
-                                print(f"Successfully converted to {format_name}")
-                                success = True
-                                break
-                            else:
-                                print(f"Failed to create QImage from {format_name}")
-                else:
-                    print(f"{format_name} conversion not supported: {reVal}")
-
-            except Exception as e:
-                print(f"Error trying {format_name} conversion: {str(e)}")
-
-        # If standard conversions failed, try to access raw buffer
-        if not success:
-            print("Standard conversions failed, trying raw buffer access...")
-            qimage = try_raw_buffer_access(img_attr, imgData, width, height, pixel_type)
-
-        if qimage and not qimage.isNull():
-            return qimage.copy()
-        else:
-            print("All conversion methods failed")
-            return create_placeholder_image(width, height, f"Failed to convert: {decode_pixel_type(pixel_type)}")
-
-    except Exception as e:
-        print(f"Error in robust conversion: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return create_placeholder_image(640, 480, f"Error: {str(e)[:50]}")
-
-
-def try_raw_buffer_access(img_attr, imgData, width, height, pixel_type):
-    """Try to access raw image buffer and interpret it"""
-    try:
-        # Get raw buffer pointer
-        # Note: This may require SDK-specific functions
-        # Try to get image data as raw bytes
-
-        # First, try to get the size of the raw data
-        raw_size = width * height
-
-        # For Bayer patterns, the size calculation depends on bit depth
-        if pixel_type == 0x1080001:  # Likely BayerRG8
-            raw_size = width * height  # 8-bit Bayer
-            print(f"Trying BayerRG8 interpretation, raw size: {raw_size}")
-
-            # We need to get the actual data buffer
-            # This might require using the SDK's memory access functions
-            return None  # Placeholder
-
-        elif pixel_type in [0x01080001, 0x1080001]:  # Mono8 or similar
-            # Try to interpret as grayscale
-            # Get buffer through ctypes
-            buffer_ptr = ctypes.cast(imgData, ctypes.POINTER(ctypes.c_ubyte * (width * height)))
-            if buffer_ptr:
-                buffer = buffer_ptr.contents
-                qimage = QImage(bytes(buffer), width, height, width, QImage.Format.Format_Grayscale8)
-                if not qimage.isNull():
-                    print("Successfully created QImage from raw grayscale buffer")
-                    return qimage
-
-    except Exception as e:
-        print(f"Error in raw buffer access: {str(e)}")
-
-    return None
-
-
-def get_direct_image_data(camera, ppayload, width, height):
-    """Try to get direct image data from the SDK"""
-    try:
-        # Some SDKs provide direct access to the image buffer
-        # Check the SDK documentation for the correct method
-
-        # Try SciCam_Payload_GetImageBuffer or similar
-        # This is a placeholder - you'll need to check your specific SDK
-
-        # Example approach:
-        img_buffer = ctypes.c_void_p()
-        buffer_size = ctypes.c_uint(0)
-
-        # This function name might vary - check your SDK
-        reVal = camera.SciCam_GetImageBuffer(ppayload, img_buffer, buffer_size)
-
-        if reVal == SCI_CAMERA_OK and buffer_size.value > 0:
-            # Convert to byte array
-            buffer_ptr = ctypes.cast(img_buffer, ctypes.POINTER(ctypes.c_ubyte * buffer_size.value))
-            buffer_data = bytes(buffer_ptr.contents)
-
-            # Try to interpret based on common patterns
-            # For width*height buffer size, assume 8-bit grayscale
-            if buffer_size.value == width * height:
-                qimage = QImage(buffer_data, width, height, width, QImage.Format.Format_Grayscale8)
-                if not qimage.isNull():
-                    return qimage
-
-            # For 3*width*height buffer size, assume RGB
-            elif buffer_size.value == width * height * 3:
-                qimage = QImage(buffer_data, width, height, width * 3, QImage.Format.Format_RGB888)
-                if not qimage.isNull():
-                    return qimage
-
-    except Exception as e:
-        print(f"Error getting direct image data: {str(e)}")
-
-    return None
-
-
-def convert_bayer_to_rgb(buffer_data, width, height, bayer_pattern="RG"):
-    """Convert Bayer pattern data to RGB using numpy"""
-    try:
-        import numpy as np
-
-        # Reshape buffer to 2D array
-        bayer_data = np.frombuffer(buffer_data, dtype=np.uint8).reshape((height, width))
-
-        # Create RGB array
-        rgb_data = np.zeros((height, width, 3), dtype=np.uint8)
-
-        # Simple Bayer demosaicing (nearest neighbor)
-        # This is a basic implementation - you may need more sophisticated demosaicing
-
-        if bayer_pattern == "RG":
-            # Red
-            rgb_data[0::2, 0::2, 0] = bayer_data[0::2, 0::2]
-            # Green
-            rgb_data[0::2, 1::2, 1] = bayer_data[0::2, 1::2]
-            rgb_data[1::2, 0::2, 1] = bayer_data[1::2, 0::2]
-            # Blue
-            rgb_data[1::2, 1::2, 2] = bayer_data[1::2, 1::2]
-
-        elif bayer_pattern == "GR":
-            # Green
-            rgb_data[0::2, 0::2, 1] = bayer_data[0::2, 0::2]
-            # Red
-            rgb_data[0::2, 1::2, 0] = bayer_data[0::2, 1::2]
-            # Blue
-            rgb_data[1::2, 0::2, 2] = bayer_data[1::2, 0::2]
-            # Green
-            rgb_data[1::2, 1::2, 1] = bayer_data[1::2, 1::2]
-
-        # Simple interpolation (fill in missing pixels with neighbors)
-        for y in range(height):
-            for x in range(width):
-                for c in range(3):
-                    if rgb_data[y, x, c] == 0:
-                        # Average of neighbors
-                        neighbors = []
-                        for dy in [-1, 0, 1]:
-                            for dx in [-1, 0, 1]:
-                                ny, nx = y + dy, x + dx
-                                if 0 <= ny < height and 0 <= nx < width and rgb_data[ny, nx, c] > 0:
-                                    neighbors.append(rgb_data[ny, nx, c])
-                        if neighbors:
-                            rgb_data[y, x, c] = int(sum(neighbors) / len(neighbors))
-
-        # Convert to QImage
-        rgb_bytes = rgb_data.tobytes()
-        qimage = QImage(rgb_bytes, width, height, width * 3, QImage.Format.Format_RGB888)
-
-        return qimage
-
-    except Exception as e:
-        print(f"Error in Bayer conversion: {str(e)}")
-        return None
-
-
-def create_placeholder_image(width, height, text=""):
-    """Create a placeholder image when conversion fails"""
-    try:
-        if width <= 0 or height <= 0:
-            width, height = 640, 480
-
-        placeholder = QImage(width, height, QImage.Format.Format_RGB888)
-
-        # Create gradient background
-        for y in range(height):
-            for x in range(width):
-                r = int(50 + 50 * x / width)
-                g = int(50 + 50 * y / height)
-                b = 100
-                placeholder.setPixelColor(x, y, QColor(r, g, b))
-
-        painter = QPainter(placeholder)
-
-        # Draw grid
-        pen = QPen(QColor(80, 80, 120), 1)
-        painter.setPen(pen)
-        grid_size = 20
-        for x in range(0, width, grid_size):
-            painter.drawLine(x, 0, x, height)
-        for y in range(0, height, grid_size):
-            painter.drawLine(0, y, width, y)
-
-        # Draw cross in center
-        painter.setPen(QPen(QColor(255, 200, 200), 2))
-        painter.drawLine(width // 2 - 10, height // 2, width // 2 + 10, height // 2)
-        painter.drawLine(width // 2, height // 2 - 10, width // 2, height // 2 + 10)
-
-        # Draw text
-        painter.setPen(QColor(255, 255, 255))
-        painter.setFont(QFont("Arial", 12, QFont.Bold))
-
-        lines = text.split('\n')
-        y_offset = height // 2 - (len(lines) * 15) // 2
-
-        for i, line in enumerate(lines):
-            painter.drawText(0, y_offset + i * 30, width, 30,
-                             Qt.AlignmentFlag.AlignCenter, line)
-
-        # Draw dimensions
-        painter.setFont(QFont("Arial", 10))
-        painter.drawText(0, 30, width, 30,
-                         Qt.AlignmentFlag.AlignCenter, f"{width} x {height}")
-
-        painter.end()
-        return placeholder
-
-    except Exception as e:
-        print(f"Error creating placeholder: {str(e)}")
-        # Last resort: create simple black image
-        simple = QImage(640, 480, QImage.Format.Format_RGB888)
-        simple.fill(QColor(0, 0, 0))
-        return simple
 
 
 class EditNodeDialog(QDialog):
@@ -528,131 +198,11 @@ class EditNodeDialog(QDialog):
         return None
 
 
-class ImageDisplayWidget(QWidget):
-    """Widget for displaying camera images"""
-
-    def __init__(self):
-        super().__init__()
-        self.current_image = None
-        self.scale_factor = 1.0
-        self.setup_ui()
-
-    def setup_ui(self):
-        layout = QVBoxLayout()
-
-        # Image display label
-        self.image_label = QLabel("No Image")
-        self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.image_label.setMinimumSize(640, 480)
-        self.image_label.setStyleSheet("""
-            QLabel {
-                background-color: #000000;
-                color: #ffffff;
-                border: 2px solid #cccccc;
-                border-radius: 4px;
-            }
-        """)
-
-        # Control buttons for image display
-        control_layout = QHBoxLayout()
-
-        self.zoom_in_btn = QPushButton("Zoom In")
-        self.zoom_in_btn.clicked.connect(self.zoom_in)
-
-        self.zoom_out_btn = QPushButton("Zoom Out")
-        self.zoom_out_btn.clicked.connect(self.zoom_out)
-
-        self.fit_btn = QPushButton("Fit to Window")
-        self.fit_btn.clicked.connect(self.fit_to_window)
-
-        self.original_btn = QPushButton("Original Size")
-        self.original_btn.clicked.connect(self.original_size)
-
-        control_layout.addWidget(self.zoom_in_btn)
-        control_layout.addWidget(self.zoom_out_btn)
-        control_layout.addWidget(self.fit_btn)
-        control_layout.addWidget(self.original_btn)
-        control_layout.addStretch()
-
-        layout.addWidget(self.image_label, 1)  # Stretch factor 1
-        layout.addLayout(control_layout)
-
-        self.setLayout(layout)
-
-    def display_image(self, qimage):
-        """Display a QImage in the widget"""
-        try:
-            if qimage is None or qimage.isNull():
-                self.image_label.setText("No Image Available")
-                self.current_image = None
-                return
-
-            self.current_image = qimage
-
-            # Scale the image
-            scaled_image = qimage.scaled(
-                qimage.size() * self.scale_factor,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
-            )
-
-            # Create pixmap and display
-            pixmap = QPixmap.fromImage(scaled_image)
-            self.image_label.setPixmap(pixmap)
-            self.image_label.setText("")
-
-            # Update status
-            self.update_status()
-
-        except Exception as e:
-            print(f"Error displaying image: {str(e)}")
-            self.image_label.setText(f"Error displaying image")
-            self.current_image = None
-
-    def update_status(self):
-        """Update image status information"""
-        if self.current_image:
-            status = f"Image: {self.current_image.width()}x{self.current_image.height()} | Zoom: {self.scale_factor:.1f}x"
-            self.image_label.setToolTip(status)
-
-    def zoom_in(self):
-        """Zoom in on the image"""
-        self.scale_factor *= 1.2
-        if self.current_image:
-            self.display_image(self.current_image)
-
-    def zoom_out(self):
-        """Zoom out on the image"""
-        self.scale_factor *= 0.8
-        if self.current_image:
-            self.display_image(self.current_image)
-
-    def fit_to_window(self):
-        """Fit image to the widget size"""
-        if self.current_image and self.image_label.width() > 0 and self.image_label.height() > 0:
-            # Calculate scale factor to fit image in label
-            label_width = self.image_label.width() - 10  # Account for border
-            label_height = self.image_label.height() - 10
-
-            scale_w = label_width / self.current_image.width()
-            scale_h = label_height / self.current_image.height()
-            self.scale_factor = min(scale_w, scale_h)
-
-            self.display_image(self.current_image)
-
-    def original_size(self):
-        """Show image at original size"""
-        self.scale_factor = 1.0
-        if self.current_image:
-            self.display_image(self.current_image)
-
-
 class CameraWorker(QThread):
     """Worker thread for camera operations"""
     log_signal = Signal(str)
     device_list_signal = Signal(list)
     image_grabbed_signal = Signal(object)  # Will emit payload data
-    image_display_signal = Signal(object)  # Will emit QImage for display
 
     def __init__(self):
         super().__init__()
@@ -804,11 +354,9 @@ class CameraWorker(QThread):
             # Get payload attributes
             payloadAttribute = SCI_CAM_PAYLOAD_ATTRIBUTE()
             reVal = SciCam_Payload_GetAttribute(ppayload, payloadAttribute)
-
             if reVal != SCI_CAMERA_OK:
-                self.log_signal.emit(f"Warning: Get payload attribute failed: Error {reVal}")
-                # Still try to proceed with default values
-                payloadAttribute = SCI_CAM_PAYLOAD_ATTRIBUTE()
+                self.log_signal.emit(f"Get payload attribute failed: Error {reVal}")
+                return None
 
             # Create payload data structure
             payload_data = {
@@ -821,37 +369,14 @@ class CameraWorker(QThread):
                 'pixel_type': payloadAttribute.imgAttr.pixelType
             }
 
-            self.log_signal.emit(
-                f"Image grabbed: {payloadAttribute.imgAttr.width}x{payloadAttribute.imgAttr.height}, Pixel type: {payloadAttribute.imgAttr.pixelType}")
-
-            # Convert to QImage for display
-            qimage = convert_payload_to_qimage_robust(payload_data)
-            if qimage:
-                self.image_display_signal.emit(qimage)
-                self.log_signal.emit("Image converted and sent for display")
-            else:
-                self.log_signal.emit("Failed to convert image, showing placeholder")
-                placeholder = create_placeholder_image(
-                    payloadAttribute.imgAttr.width,
-                    payloadAttribute.imgAttr.height,
-                    f"Pixel Type: {payloadAttribute.imgAttr.pixelType}"
-                )
-                if placeholder:
-                    self.image_display_signal.emit(placeholder)
-
-            # Free the payload after we're done with it
-            try:
-                self.camera.SciCam_FreePayload(ppayload)
-            except:
-                pass
-
             self.image_grabbed_signal.emit(payload_data)
+            self.log_signal.emit(
+                f"Image grabbed: Frame {payloadAttribute.frameID}, {payloadAttribute.imgAttr.width}x{payloadAttribute.imgAttr.height}")
+
             return payload_data
 
         except Exception as e:
             self.log_signal.emit(f"Error grabbing image: {str(e)}")
-            import traceback
-            traceback.print_exc()
             return None
 
 
@@ -1283,10 +808,6 @@ class CameraControlWidget(QWidget):
         self.status_tab = self.create_status_tab()
         self.tab_widget.addTab(self.status_tab, "Status")
 
-        # Image display tab
-        self.image_tab = self.create_image_tab()
-        self.tab_widget.addTab(self.image_tab, "Image Preview")
-
         main_layout.addWidget(self.tab_widget)
 
         # Log area
@@ -1369,20 +890,6 @@ class CameraControlWidget(QWidget):
         timeout_layout.addWidget(self.timeout_spin)
         timeout_layout.addStretch()
         settings_layout.addLayout(timeout_layout)
-
-        # Pixel format setting
-        pixel_format_layout = QHBoxLayout()
-        pixel_format_layout.addWidget(QLabel("Pixel Format:"))
-        self.pixel_format_combo = QComboBox()
-        self.pixel_format_combo.addItems(["Mono8", "RGB8", "BayerRG8", "BayerGR8", "BayerGB8", "BayerBG8"])
-        self.pixel_format_combo.setCurrentIndex(0)
-        pixel_format_layout.addWidget(self.pixel_format_combo)
-
-        self.set_format_btn = QPushButton("Set Format")
-        self.set_format_btn.clicked.connect(self.set_pixel_format_from_combo)
-        pixel_format_layout.addWidget(self.set_format_btn)
-        pixel_format_layout.addStretch()
-        settings_layout.addLayout(pixel_format_layout)
 
         # Buffer count
         buffer_layout = QHBoxLayout()
@@ -1515,39 +1022,11 @@ class CameraControlWidget(QWidget):
         widget.setLayout(layout)
         return widget
 
-    def create_image_tab(self):
-        """Create image display tab"""
-        widget = QWidget()
-        layout = QVBoxLayout()
-
-        # Image display widget
-        self.image_display = ImageDisplayWidget()
-        layout.addWidget(self.image_display)
-
-        # Image controls
-        controls_layout = QHBoxLayout()
-
-        self.auto_display_check = QCheckBox("Auto-display images")
-        self.auto_display_check.setChecked(True)
-
-        self.clear_image_btn = QPushButton("Clear Image")
-        self.clear_image_btn.clicked.connect(self.clear_image_display)
-
-        controls_layout.addWidget(self.auto_display_check)
-        controls_layout.addWidget(self.clear_image_btn)
-        controls_layout.addStretch()
-
-        layout.addLayout(controls_layout)
-
-        widget.setLayout(layout)
-        return widget
-
     def connect_signals(self):
         """Connect camera worker signals"""
         self.camera_worker.log_signal.connect(self.update_log)
         self.camera_worker.device_list_signal.connect(self.update_device_list)
         self.camera_worker.image_grabbed_signal.connect(self.on_image_grabbed)
-        self.camera_worker.image_display_signal.connect(self.on_image_for_display)
 
         # Setup FPS timer
         self.fps_timer.timeout.connect(self.update_fps)
@@ -1685,32 +1164,15 @@ class CameraControlWidget(QWidget):
         """Handle grabbed image"""
         self.frame_count += 1
 
-        try:
-            info_str = f"""
-            <b>Frame ID:</b> {payload_data.get('frame_id', 0)}<br>
-            <b>Timestamp:</b> {payload_data.get('timestamp', 0)}<br>
-            <b>Resolution:</b> {payload_data.get('width', 0)} x {payload_data.get('height', 0)}<br>
-            <b>Pixel Type:</b> {decode_pixel_type(payload_data.get('pixel_type', 0))}<br>
-            """
+        info_str = f"""
+        <b>Frame ID:</b> {payload_data['frame_id']}<br>
+        <b>Timestamp:</b> {payload_data['timestamp']}<br>
+        <b>Resolution:</b> {payload_data['width']} x {payload_data['height']}<br>
+        <b>Pixel Type:</b> {GetEnumName(SciCamPixelType, payload_data['pixel_type']) if GetEnumName(SciCamPixelType, payload_data['pixel_type']) else payload_data['pixel_type']}<br>
+        """
 
-            self.image_info_text.setText(info_str)
-            self.last_payload = payload_data
-        except Exception as e:
-            self.update_log(f"Error updating image info: {str(e)}")
-
-    def on_image_for_display(self, qimage):
-        """Handle image for display"""
-        try:
-            if self.auto_display_check.isChecked() and qimage is not None:
-                self.image_display.display_image(qimage)
-                # Switch to image tab
-                self.tab_widget.setCurrentWidget(self.image_tab)
-        except Exception as e:
-            self.update_log(f"Error displaying image: {str(e)}")
-
-    def clear_image_display(self):
-        """Clear the image display"""
-        self.image_display.display_image(None)
+        self.image_info_text.setText(info_str)
+        self.last_payload = payload_data
 
     def update_fps(self):
         """Update FPS display"""
@@ -1731,21 +1193,16 @@ class CameraControlWidget(QWidget):
         file_path, _ = QFileDialog.getSaveFileName(
             self,
             "Save Image",
-            f"image_frame_{self.last_payload.get('frame_id', 0)}.bmp",
+            f"image_frame_{self.last_payload['frame_id']}.bmp",
             "BMP Files (*.bmp);;JPEG Files (*.jpg *.jpeg);;TIFF Files (*.tiff);;PNG Files (*.png);;All Files (*.*)"
         )
+
         if file_path:
             try:
-                # Convert payload to QImage first
-                qimage = convert_payload_to_qimage_robust(self.last_payload)
-                if qimage and not qimage.isNull():
-                    # Save the QImage
-                    if qimage.save(file_path):
-                        self.update_log(f"Image saved successfully: {file_path}")
-                    else:
-                        self.update_log(f"Failed to save image: {file_path}")
-                else:
-                    self.update_log("Failed to convert image for saving")
+                # For now, just log the save attempt
+                # You'll need to implement the actual saving based on your SciCam SDK
+                self.update_log(f"Image save requested for: {file_path}")
+                self.update_log("Note: Image saving implementation requires SciCam SDK functions")
 
             except Exception as e:
                 self.update_log(f"Error saving image: {str(e)}")
@@ -1765,60 +1222,6 @@ class CameraControlWidget(QWidget):
 
         except Exception as e:
             self.update_log(f"Error getting SDK version: {str(e)}")
-
-    def set_pixel_format_from_combo(self):
-        """Set pixel format based on combo box selection"""
-        format_name = self.pixel_format_combo.currentText()
-        self.set_pixel_format(format_name)
-
-    def set_pixel_format(self, format_name):
-        """Set camera pixel format if supported"""
-        try:
-            if not self.camera_worker.camera:
-                self.update_log("No camera connected")
-                return False
-
-            # Look for PixelFormat node
-            nodesCount = ctypes.c_uint(0)
-            reVal = self.camera_worker.camera.SciCam_GetNodes(None, nodesCount)
-
-            if reVal == SCI_CAMERA_OK and nodesCount.value > 0:
-                nodes = (SCI_CAM_NODE * nodesCount.value)()
-                reVal = self.camera_worker.camera.SciCam_GetNodes(
-                    ctypes.cast(nodes, PSCI_CAM_NODE).contents, nodesCount)
-
-                if reVal == SCI_CAMERA_OK:
-                    for i in range(nodesCount.value):
-                        node = nodes[i]
-                        node_name = node.name.decode() if node.name else ""
-                        if "PixelFormat" in node_name or "PixelType" in node_name:
-                            # Try to set the format
-                            if node.type == SciCamNodeType.SciCam_NodeType_Enum:
-                                eVal = SCI_NODE_VAL_ENUM()
-                                reVal = self.camera_worker.camera.SciCam_GetEnumValueEx(
-                                    SciCamDeviceXmlType.SciCam_DeviceXml_Camera,
-                                    node_name, eVal)
-
-                                if reVal == SCI_CAMERA_OK:
-                                    # Look for desired format
-                                    for j in range(eVal.itemCount):
-                                        item_desc = eVal.items[j].desc.decode() if eVal.items[j].desc else ""
-                                        if format_name in item_desc:
-                                            # Set the format
-                                            reVal = self.camera_worker.camera.SciCam_SetEnumValueEx(
-                                                SciCamDeviceXmlType.SciCam_DeviceXml_Camera,
-                                                node_name, eVal.items[j].val)
-
-                                            if reVal == SCI_CAMERA_OK:
-                                                self.update_log(f"Pixel format set to: {item_desc}")
-                                                return True
-
-            self.update_log(f"Could not set pixel format to {format_name}")
-            return False
-
-        except Exception as e:
-            self.update_log(f"Error setting pixel format: {str(e)}")
-            return False
 
     def update_log(self, message):
         """Update log display"""
@@ -1927,9 +1330,6 @@ class MainWindow(QMainWindow):
                 background-color: white;
                 border: 1px solid #ddd;
                 border-radius: 4px;
-            }
-            QLabel {
-                color: #333333;
             }
         """)
 
