@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                                QLineEdit, QMessageBox, QSplitter, QScrollArea,
                                QProgressBar, QCheckBox, QFrame, QTreeWidget,
                                QTreeWidgetItem, QFileDialog, QDialog,
-                               QDialogButtonBox, QFormLayout, QCheckBox, QComboBox)
+                               QDialogButtonBox, QFormLayout, QSizePolicy)  # 添加 QSizePolicy
 from PySide6.QtCore import Qt, QTimer, Signal, QThread, Slot
 from PySide6.QtGui import QFont, QColor, QPalette, QBrush
 
@@ -20,6 +20,17 @@ from SciCam_class import *
 import socket
 import struct
 from ctypes import c_bool
+
+from PySide6.QtGui import QImage, QPixmap
+
+def show_image(self):
+
+    w = self.camera_worker.last_width
+    h = self.camera_worker.last_height
+    data = bytes(self.camera_worker.last_image_data)
+
+    img = QImage(data, w, h, w, QImage.Format_Grayscale8)
+    self.image_label.setPixmap(QPixmap.fromImage(img))
 
 
 # Replicate the GetEnumName function from the console script
@@ -202,7 +213,8 @@ class CameraWorker(QThread):
     """Worker thread for camera operations"""
     log_signal = Signal(str)
     device_list_signal = Signal(list)
-    image_grabbed_signal = Signal(object)  # Will emit payload data
+    image_grabbed_signal = Signal(bytes, int, int)  # 修改为发射图像数据和尺寸
+    image_saved_signal = Signal(str)  # 添加图像保存信号
 
     def __init__(self):
         super().__init__()
@@ -210,6 +222,15 @@ class CameraWorker(QThread):
         self.devices = []
         self.current_device = None
         self.is_grabbing = False
+        self.continuous_grab = False  # 添加连续抓取标志
+
+        # 图像相关属性
+        self.last_image_data = None
+        self.last_width = 0
+        self.last_height = 0
+        self.last_pixel_type = SciCamPixelType.Mono8
+        self.save_image_triggered = False
+        self.save_image_path = ""
 
     def discovery_devices(self):
         """Discover available devices"""
@@ -283,6 +304,39 @@ class CameraWorker(QThread):
         except Exception as e:
             self.log_signal.emit(f"Error closing device: {str(e)}")
 
+
+
+    def run(self):
+        """Continuous grabbing thread"""
+        while self.continuous_grab and self.is_grabbing:
+            try:
+                # 抓取单帧
+                success = self.grab_single_image()
+                if success and self.last_image_data:
+                    # 确保图像数据是bytes类型
+                    if isinstance(self.last_image_data, ctypes.Array):
+                        image_bytes = bytes(self.last_image_data)
+                    else:
+                        image_bytes = self.last_image_data
+
+                    # 发送图像数据到UI
+                    self.image_grabbed_signal.emit(
+                        image_bytes,
+                        self.last_width,
+                        self.last_height
+                    )
+
+                    # 如果触发了保存图像
+                    if self.save_image_triggered and self.save_image_path:
+                        self.save_current_image()
+
+                # 控制帧率
+                time.sleep(0.033)  # ~30 FPS
+
+            except Exception as e:
+                self.log_signal.emit(f"Error in continuous grabbing: {str(e)}")
+                time.sleep(1)
+
     def start_grabbing(self, timeout, buffer_count, strategy):
         """Start continuous grabbing"""
         try:
@@ -295,7 +349,13 @@ class CameraWorker(QThread):
             reVal = self.camera.SciCam_StartGrabbing()
             if reVal == SCI_CAMERA_OK:
                 self.is_grabbing = True
+                self.continuous_grab = True
                 self.log_signal.emit("Continuous grabbing started")
+
+                # 启动连续抓取线程
+                if not self.isRunning():
+                    self.start()
+
                 return True
             else:
                 self.log_signal.emit(f"Failed to start grabbing: Error {reVal}")
@@ -308,6 +368,7 @@ class CameraWorker(QThread):
     def stop_grabbing(self):
         """Stop continuous grabbing"""
         try:
+            self.continuous_grab = False
             reVal = self.camera.SciCam_StopGrabbing()
             if reVal == SCI_CAMERA_OK:
                 self.is_grabbing = False
@@ -321,63 +382,114 @@ class CameraWorker(QThread):
             self.log_signal.emit(f"Error stopping grabbing: {str(e)}")
             return False
 
-    def grab_single_image(self, timeout=1000):
-        """Grab a single image (starts grabbing temporarily if not already grabbing)"""
+    def grab_single_image(self, timeout=None):
+        """Grab a single image"""
         try:
-            was_grabbing = self.is_grabbing
-
-            # If not already grabbing, start grabbing temporarily
-            if not was_grabbing:
-                self.log_signal.emit("Starting grab for single image...")
-                self.camera.SciCam_SetGrabTimeout(timeout)
-                self.camera.SciCam_SetGrabBufferCount(1)
-                self.camera.SciCam_SetGrabStrategy(0)  # OneByOne strategy
-
-                reVal = self.camera.SciCam_StartGrabbing()
-                if reVal != SCI_CAMERA_OK:
-                    self.log_signal.emit(f"Failed to start grabbing for single image: Error {reVal}")
-                    return None
-
-            # Now grab the image
             ppayload = ctypes.c_void_p()
             reVal = self.camera.SciCam_Grab(ppayload)
-
-            # Stop grabbing if we started it just for this single image
-            if not was_grabbing:
-                self.camera.SciCam_StopGrabbing()
-                self.is_grabbing = False
-
             if reVal != SCI_CAMERA_OK:
                 self.log_signal.emit(f"Grab failed: Error {reVal}")
                 return None
 
-            # Get payload attributes
             payloadAttribute = SCI_CAM_PAYLOAD_ATTRIBUTE()
-            reVal = SciCam_Payload_GetAttribute(ppayload, payloadAttribute)
-            if reVal != SCI_CAMERA_OK:
-                self.log_signal.emit(f"Get payload attribute failed: Error {reVal}")
-                return None
+            SciCam_Payload_GetAttribute(ppayload, payloadAttribute)
 
-            # Create payload data structure
-            payload_data = {
-                'payload': ppayload,
-                'attribute': payloadAttribute,
-                'width': payloadAttribute.imgAttr.width,
-                'height': payloadAttribute.imgAttr.height,
-                'frame_id': payloadAttribute.frameID,
-                'timestamp': payloadAttribute.timeStamp,
-                'pixel_type': payloadAttribute.imgAttr.pixelType
-            }
+            imgWidth = payloadAttribute.imgAttr.width
+            imgHeight = payloadAttribute.imgAttr.height
+            imgPixelType = payloadAttribute.imgAttr.pixelType
 
-            self.image_grabbed_signal.emit(payload_data)
-            self.log_signal.emit(
-                f"Image grabbed: Frame {payloadAttribute.frameID}, {payloadAttribute.imgAttr.width}x{payloadAttribute.imgAttr.height}")
+            imgData = ctypes.c_void_p()
+            SciCam_Payload_GetImage(ppayload, imgData)
 
-            return payload_data
+            dstImgSize = ctypes.c_int()
+
+            # 判断是否为单色图像
+            mono_formats = [
+                SciCamPixelType.Mono1p, SciCamPixelType.Mono2p, SciCamPixelType.Mono4p,
+                SciCamPixelType.Mono8s, SciCamPixelType.Mono8, SciCamPixelType.Mono10,
+                SciCamPixelType.Mono10p, SciCamPixelType.Mono12, SciCamPixelType.Mono12p,
+                SciCamPixelType.Mono14, SciCamPixelType.Mono16,
+                SciCamPixelType.Mono10Packed, SciCamPixelType.Mono12Packed
+            ]
+
+            if imgPixelType in mono_formats:
+                target_type = SciCamPixelType.Mono8
+            else:
+                target_type = SciCamPixelType.RGB8
+
+            # 获取所需缓冲区大小
+            SciCam_Payload_ConvertImage(
+                payloadAttribute.imgAttr,
+                imgData,
+                target_type,
+                None,
+                dstImgSize,
+                True
+            )
+
+            # 分配缓冲区
+            pDstData = (ctypes.c_ubyte * dstImgSize.value)()
+
+            SciCam_Payload_ConvertImageEx(
+                payloadAttribute.imgAttr,
+                imgData,
+                target_type,
+                pDstData,
+                dstImgSize,
+                True,
+                0
+            )
+
+            # 存储图像数据
+            self.last_image_data = bytes(pDstData)
+            self.last_width = imgWidth
+            self.last_height = imgHeight
+            self.last_pixel_type = target_type
+
+            self.camera.SciCam_FreePayload(ppayload)
+
+            return True
 
         except Exception as e:
             self.log_signal.emit(f"Error grabbing image: {str(e)}")
-            return None
+            return False
+
+    def trigger_save_image(self, file_path):
+        """Trigger saving of the current image"""
+        self.save_image_triggered = True
+        self.save_image_path = file_path
+
+    def save_current_image(self):
+        """Save the current image to file"""
+        try:
+            if not self.last_image_data or not self.save_image_path:
+                return False
+
+            reVal = SciCam_Payload_SaveImage(
+                self.save_image_path,
+                self.last_pixel_type,
+                self.last_image_data,
+                self.last_width,
+                self.last_height
+            )
+
+            if reVal == SCI_CAMERA_OK:
+                self.image_saved_signal.emit(f"Image saved to {self.save_image_path}")
+                self.log_signal.emit(f"Image saved to {self.save_image_path}")
+            else:
+                self.log_signal.emit(f"Save failed: Error {reVal}")
+
+            # 重置保存标志
+            self.save_image_triggered = False
+            self.save_image_path = ""
+
+            return reVal == SCI_CAMERA_OK
+
+        except Exception as e:
+            self.log_signal.emit(f"Error saving image: {str(e)}")
+            self.save_image_triggered = False
+            self.save_image_path = ""
+            return False
 
 
 class DeviceInfoWidget(QWidget):
@@ -763,6 +875,219 @@ class NodeTreeWidget(QWidget):
             QMessageBox.critical(self, "Error", f"Failed to update node: {str(e)}")
 
 
+class ImageDisplayWidget(QWidget):
+    """Widget for displaying camera images"""
+
+    def __init__(self):
+        super().__init__()
+        self.setup_ui()
+        self.current_image = None
+        self.scale_factor = 1.0
+
+    def setup_ui(self):
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        # 工具栏
+        toolbar_layout = QHBoxLayout()
+
+        self.zoom_in_btn = QPushButton("+")
+        self.zoom_in_btn.clicked.connect(self.zoom_in)
+        self.zoom_in_btn.setFixedSize(30, 30)
+        self.zoom_in_btn.setToolTip("Zoom In")
+
+        self.zoom_out_btn = QPushButton("-")
+        self.zoom_out_btn.clicked.connect(self.zoom_out)
+        self.zoom_out_btn.setFixedSize(30, 30)
+        self.zoom_out_btn.setToolTip("Zoom Out")
+
+        self.zoom_fit_btn = QPushButton("Fit")
+        self.zoom_fit_btn.clicked.connect(self.zoom_fit)
+        self.zoom_fit_btn.setToolTip("Fit to Window")
+
+        self.zoom_100_btn = QPushButton("100%")
+        self.zoom_100_btn.clicked.connect(self.zoom_100)
+        self.zoom_100_btn.setToolTip("Actual Size")
+
+        self.zoom_label = QLabel("100%")
+        self.zoom_label.setAlignment(Qt.AlignCenter)
+        self.zoom_label.setFixedWidth(60)
+
+        self.size_label = QLabel("No image")
+        self.size_label.setAlignment(Qt.AlignRight)
+
+        toolbar_layout.addWidget(QLabel("Zoom:"))
+        toolbar_layout.addWidget(self.zoom_in_btn)
+        toolbar_layout.addWidget(self.zoom_out_btn)
+        toolbar_layout.addWidget(self.zoom_fit_btn)
+        toolbar_layout.addWidget(self.zoom_100_btn)
+        toolbar_layout.addWidget(self.zoom_label)
+        toolbar_layout.addStretch()
+        toolbar_layout.addWidget(self.size_label)
+
+        layout.addLayout(toolbar_layout)
+
+        # 图像显示区域
+        self.image_scroll = QScrollArea()
+        self.image_scroll.setWidgetResizable(True)
+        self.image_scroll.setAlignment(Qt.AlignCenter)
+        self.image_scroll.setStyleSheet("""
+            QScrollArea {
+                border: 1px solid #cccccc;
+                border-radius: 4px;
+                background-color: #2c2c2c;
+            }
+        """)
+
+        self.image_label = QLabel()
+        self.image_label.setAlignment(Qt.AlignCenter)
+        self.image_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)  # 修改这里
+        self.image_label.setScaledContents(False)
+        self.image_label.setMinimumSize(320, 240)
+        self.image_label.setStyleSheet("""
+            QLabel {
+                background-color: #2c2c2c;
+                border: none;
+            }
+        """)
+
+        self.image_scroll.setWidget(self.image_label)
+        layout.addWidget(self.image_scroll)
+
+        # 状态信息
+        self.info_label = QLabel("Ready")
+        self.info_label.setAlignment(Qt.AlignCenter)
+        self.info_label.setStyleSheet("""
+            QLabel {
+                color: #666666;
+                font-size: 12px;
+                padding: 4px;
+            }
+        """)
+        layout.addWidget(self.info_label)
+
+        self.setLayout(layout)
+
+    def display_image(self, image_data, width, height, pixel_type=SciCamPixelType.Mono8):
+        """Display image from raw data"""
+        try:
+            # 根据像素类型创建QImage
+            if pixel_type == SciCamPixelType.Mono8:
+                format = QImage.Format_Grayscale8
+                bytes_per_line = width
+            elif pixel_type == SciCamPixelType.RGB8:
+                format = QImage.Format_RGB888
+                bytes_per_line = width * 3
+            else:
+                self.info_label.setText(f"Unsupported pixel format: {pixel_type}")
+                return
+
+            # 确保图像数据是bytes类型
+            if isinstance(image_data, ctypes.Array):
+                image_data = bytes(image_data)
+            elif isinstance(image_data, bytes):
+                pass
+            else:
+                image_data = bytes(image_data)
+
+            # 创建QImage
+            image = QImage(image_data, width, height, bytes_per_line, format)
+
+            # 检查图像是否有效
+            if image.isNull():
+                self.info_label.setText("Error: Invalid image data")
+                return
+
+            # 转换为QPixmap并显示
+            pixmap = QPixmap.fromImage(image)
+            self.current_image = pixmap
+
+            # 重置缩放因子
+            self.scale_factor = 1.0
+
+            # 更新显示
+            self.update_display()
+
+            # 更新状态信息
+            self.size_label.setText(f"{width} × {height}")
+            pixel_type_name = GetEnumName(SciCamPixelType, pixel_type) or str(pixel_type)
+            self.info_label.setText(f"Image loaded: {width} × {height}, {pixel_type_name}")
+
+        except Exception as e:
+            self.info_label.setText(f"Error displaying image: {str(e)}")
+
+    def update_display(self):
+        """Update the displayed image with current scale factor"""
+        if self.current_image:
+            # 计算缩放后的尺寸
+            scaled_width = int(self.current_image.width() * self.scale_factor)
+            scaled_height = int(self.current_image.height() * self.scale_factor)
+
+            # 缩放图像
+            scaled_pixmap = self.current_image.scaled(
+                scaled_width,
+                scaled_height,
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation
+            )
+
+            # 设置图像
+            self.image_label.setPixmap(scaled_pixmap)
+
+            # 调整标签大小
+            self.image_label.resize(scaled_pixmap.size())
+
+            # 更新缩放比例显示
+            self.zoom_label.setText(f"{int(self.scale_factor * 100)}%")
+
+    def zoom_in(self):
+        """Zoom in"""
+        if self.current_image:
+            self.scale_factor *= 1.2
+            if self.scale_factor > 5.0:  # 限制最大缩放
+                self.scale_factor = 5.0
+            self.update_display()
+
+    def zoom_out(self):
+        """Zoom out"""
+        if self.current_image:
+            self.scale_factor /= 1.2
+            if self.scale_factor < 0.1:  # 限制最小缩放
+                self.scale_factor = 0.1
+            self.update_display()
+
+    def zoom_fit(self):
+        """Zoom to fit"""
+        if self.current_image and self.image_scroll.viewport().width() > 0:
+            # 获取滚动区域可用大小
+            viewport_width = self.image_scroll.viewport().width() - 20
+            viewport_height = self.image_scroll.viewport().height() - 20
+
+            if viewport_width > 0 and viewport_height > 0:
+                # 计算适合窗口的缩放比例
+                scale_x = viewport_width / self.current_image.width()
+                scale_y = viewport_height / self.current_image.height()
+
+                self.scale_factor = min(scale_x, scale_y, 1.0)
+                self.update_display()
+
+    def zoom_100(self):
+        """Zoom to 100%"""
+        if self.current_image:
+            self.scale_factor = 1.0
+            self.update_display()
+
+    def clear_image(self):
+        """Clear the displayed image"""
+        self.current_image = None
+        self.image_label.clear()
+        self.image_label.setText("No Image")
+        self.size_label.setText("No image")
+        self.info_label.setText("No image to display")
+        self.zoom_label.setText("100%")
+        self.scale_factor = 1.0
+
+
 class CameraControlWidget(QWidget):
     """Main camera control widget"""
 
@@ -770,17 +1095,17 @@ class CameraControlWidget(QWidget):
         super().__init__()
         self.camera_worker = CameraWorker()
         self.current_device_index = -1
-        self.last_payload = None
         self.frame_count = 0
         self.fps_timer = QTimer()
         self.last_fps_time = time.time()
+
         self.setup_ui()
         self.connect_signals()
 
     def setup_ui(self):
         main_layout = QVBoxLayout()
 
-        # Title
+        # 标题
         title_label = QLabel("SciCamera Control Panel")
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title_font = QFont()
@@ -789,28 +1114,73 @@ class CameraControlWidget(QWidget):
         title_label.setFont(title_font)
         main_layout.addWidget(title_label)
 
-        # Create tabs
+        # 创建主分割器
+        splitter = QSplitter(Qt.Horizontal)
+
+        # 左侧：控制面板
+        left_widget = QWidget()
+        left_layout = QVBoxLayout()
+
+        # 创建标签页
         self.tab_widget = QTabWidget()
 
-        # Device tab
+        # 设备标签页
         self.device_tab = self.create_device_tab()
         self.tab_widget.addTab(self.device_tab, "Devices")
 
-        # Acquisition tab
+        # 采集标签页
         self.acquisition_tab = self.create_acquisition_tab()
         self.tab_widget.addTab(self.acquisition_tab, "Acquisition")
 
-        # Nodes tab
+        # 节点标签页
         self.nodes_tab = self.create_nodes_tab()
         self.tab_widget.addTab(self.nodes_tab, "Nodes")
 
-        # Status tab
+        # 状态标签页
         self.status_tab = self.create_status_tab()
         self.tab_widget.addTab(self.status_tab, "Status")
 
-        main_layout.addWidget(self.tab_widget)
+        left_layout.addWidget(self.tab_widget)
+        left_widget.setLayout(left_layout)
 
-        # Log area
+        # 右侧：图像显示
+        right_widget = QWidget()
+        right_layout = QVBoxLayout()
+
+        # 图像显示部件
+        self.image_display = ImageDisplayWidget()
+        right_layout.addWidget(self.image_display)
+
+        # 快速操作按钮
+        quick_buttons_layout = QHBoxLayout()
+
+        self.live_view_btn = QPushButton("Live View")
+        self.live_view_btn.clicked.connect(self.toggle_live_view)
+        self.live_view_btn.setCheckable(True)
+
+        self.snap_btn = QPushButton("Snap")
+        self.snap_btn.clicked.connect(self.snap_image)
+
+        self.save_btn = QPushButton("Save Image")
+        self.save_btn.clicked.connect(self.save_current_image)
+
+        quick_buttons_layout.addWidget(self.live_view_btn)
+        quick_buttons_layout.addWidget(self.snap_btn)
+        quick_buttons_layout.addWidget(self.save_btn)
+        quick_buttons_layout.addStretch()
+
+        right_layout.addLayout(quick_buttons_layout)
+        right_widget.setLayout(right_layout)
+
+        # 添加到分割器
+        splitter.addWidget(left_widget)
+        splitter.addWidget(right_widget)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 2)
+
+        main_layout.addWidget(splitter)
+
+        # 日志区域
         log_group = QGroupBox("Log")
         log_layout = QVBoxLayout()
         self.log_text = QTextEdit()
@@ -948,15 +1318,6 @@ class CameraControlWidget(QWidget):
         image_group.setLayout(image_layout)
         layout.addWidget(image_group)
 
-        # Save image button
-        save_layout = QHBoxLayout()
-        self.save_image_btn = QPushButton("Save Last Image")
-        self.save_image_btn.clicked.connect(self.save_image)
-        self.save_image_btn.setEnabled(False)
-        save_layout.addWidget(self.save_image_btn)
-        save_layout.addStretch()
-        layout.addLayout(save_layout)
-
         widget.setLayout(layout)
         return widget
 
@@ -1027,14 +1388,18 @@ class CameraControlWidget(QWidget):
         self.camera_worker.log_signal.connect(self.update_log)
         self.camera_worker.device_list_signal.connect(self.update_device_list)
         self.camera_worker.image_grabbed_signal.connect(self.on_image_grabbed)
+        self.camera_worker.image_saved_signal.connect(self.on_image_saved)
 
         # Setup FPS timer
         self.fps_timer.timeout.connect(self.update_fps)
         self.fps_timer.start(1000)  # Update every second
 
+    # === 添加缺失的方法 ===
+
     def discover_devices(self):
         """Discover available devices"""
         self.discover_btn.setEnabled(False)
+        self.update_log("Starting device discovery...")
         self.camera_worker.discovery_devices()
         self.discover_btn.setEnabled(True)
 
@@ -1071,42 +1436,57 @@ class CameraControlWidget(QWidget):
             self.device_table.setItem(i, 2, QTableWidgetItem(model_name[:50]))
             self.device_table.setItem(i, 3, QTableWidgetItem(serial[:50]))
 
+        self.update_log(f"Found {len(devices)} device(s)")
+
     def on_device_selected(self, row, column):
         """Handle device selection"""
         self.current_device_index = row
         self.device_info_widget.update_info(self.camera_worker.devices[row]['info'])
         self.open_btn.setEnabled(True)
+        self.update_log(f"Selected device {row}")
 
     def open_device(self):
         """Open selected device"""
         if self.current_device_index >= 0:
             self.open_btn.setEnabled(False)
+            self.update_log(f"Opening device {self.current_device_index}...")
             success = self.camera_worker.open_device(self.current_device_index)
 
             if success:
                 self.close_btn.setEnabled(True)
                 self.start_grab_btn.setEnabled(True)
                 self.single_grab_btn.setEnabled(True)
+                self.live_view_btn.setEnabled(True)
+                self.snap_btn.setEnabled(True)
+                self.save_btn.setEnabled(True)
                 self.device_status_label.setText("Device: Connected")
                 self.camera_status_label.setText("Camera: Open")
+                self.update_log("Device opened successfully")
             else:
                 self.open_btn.setEnabled(True)
+                self.update_log("Failed to open device")
 
     def close_device(self):
         """Close current device"""
+        self.update_log("Closing device...")
         self.camera_worker.close_device()
         self.close_btn.setEnabled(False)
         self.open_btn.setEnabled(True)
         self.start_grab_btn.setEnabled(False)
         self.stop_grab_btn.setEnabled(False)
         self.single_grab_btn.setEnabled(False)
+        self.live_view_btn.setEnabled(False)
+        self.snap_btn.setEnabled(False)
+        self.save_btn.setEnabled(False)
         self.device_status_label.setText("Device: Not Connected")
         self.camera_status_label.setText("Camera: Not Open")
         self.grabbing_status_label.setText("Grabbing: Not Active")
+        self.update_log("Device closed")
 
     def start_grabbing(self):
         """Start continuous grabbing"""
         try:
+            self.update_log("Starting continuous grabbing...")
             # Apply settings
             timeout = self.timeout_spin.value()
             buffer_count = self.buffer_spin.value()
@@ -1121,9 +1501,12 @@ class CameraControlWidget(QWidget):
                 self.start_grab_btn.setEnabled(False)
                 self.stop_grab_btn.setEnabled(True)
                 self.single_grab_btn.setEnabled(False)
+                self.live_view_btn.setChecked(True)
                 self.grabbing_status_label.setText("Grabbing: Active")
+                self.update_log("Continuous grabbing started")
             else:
                 self.start_grab_btn.setEnabled(True)
+                self.update_log("Failed to start continuous grabbing")
 
         except Exception as e:
             self.update_log(f"Error starting grabbing: {str(e)}")
@@ -1132,14 +1515,18 @@ class CameraControlWidget(QWidget):
     def stop_grabbing(self):
         """Stop continuous grabbing"""
         try:
+            self.update_log("Stopping continuous grabbing...")
             success = self.camera_worker.stop_grabbing()
             if success:
                 self.start_grab_btn.setEnabled(True)
                 self.stop_grab_btn.setEnabled(False)
                 self.single_grab_btn.setEnabled(True)
+                self.live_view_btn.setChecked(False)
                 self.grabbing_status_label.setText("Grabbing: Not Active")
+                self.update_log("Continuous grabbing stopped")
             else:
                 self.stop_grab_btn.setEnabled(True)
+                self.update_log("Failed to stop continuous grabbing")
 
         except Exception as e:
             self.update_log(f"Error stopping grabbing: {str(e)}")
@@ -1148,31 +1535,95 @@ class CameraControlWidget(QWidget):
     def grab_single(self):
         """Grab a single image"""
         self.single_grab_btn.setEnabled(False)
+        self.update_log("Grabbing single image...")
 
-        # Use the timeout setting for single grab
-        timeout = self.timeout_spin.value()
-        image_data = self.camera_worker.grab_single_image(timeout)
+        try:
+            success = self.camera_worker.grab_single_image()
+            if success:
+                # 更新图像显示
+                if (hasattr(self.camera_worker, 'last_image_data') and
+                        self.camera_worker.last_image_data):
+                    self.image_display.display_image(
+                        self.camera_worker.last_image_data,
+                        self.camera_worker.last_width,
+                        self.camera_worker.last_height,
+                        self.camera_worker.last_pixel_type
+                    )
+
+                self.frame_count += 1
+                self.frame_count_label.setText(f"Frames Grabbed: {self.frame_count}")
+                self.update_log("Single image grabbed successfully")
+
+        except Exception as e:
+            self.update_log(f"Error grabbing single image: {str(e)}")
 
         self.single_grab_btn.setEnabled(True)
 
-        if image_data:
-            self.save_image_btn.setEnabled(True)
-            self.frame_count += 1
-            self.frame_count_label.setText(f"Frames Grabbed: {self.frame_count}")
-
-    def on_image_grabbed(self, payload_data):
+    def on_image_grabbed(self, image_data, width, height):
         """Handle grabbed image"""
         self.frame_count += 1
 
-        info_str = f"""
-        <b>Frame ID:</b> {payload_data['frame_id']}<br>
-        <b>Timestamp:</b> {payload_data['timestamp']}<br>
-        <b>Resolution:</b> {payload_data['width']} x {payload_data['height']}<br>
-        <b>Pixel Type:</b> {GetEnumName(SciCamPixelType, payload_data['pixel_type']) if GetEnumName(SciCamPixelType, payload_data['pixel_type']) else payload_data['pixel_type']}<br>
-        """
+        # 更新图像显示
+        self.image_display.display_image(
+            image_data,
+            width,
+            height,
+            self.camera_worker.last_pixel_type
+        )
 
+        # 更新图像信息
+        info_str = f"""
+        <b>Resolution:</b> {width} × {height}<br>
+        <b>Pixel Type:</b> {GetEnumName(SciCamPixelType, self.camera_worker.last_pixel_type) if GetEnumName(SciCamPixelType, self.camera_worker.last_pixel_type) else self.camera_worker.last_pixel_type}<br>
+        <b>Data Size:</b> {len(image_data)} bytes
+        """
         self.image_info_text.setText(info_str)
-        self.last_payload = payload_data
+
+    def on_image_saved(self, message):
+        """Handle image saved signal"""
+        self.update_log(message)
+
+    def toggle_live_view(self):
+        """Toggle live view mode"""
+        if self.live_view_btn.isChecked():
+            # 开始实时视图
+            self.update_log("Starting live view...")
+            if not self.camera_worker.is_grabbing:
+                self.start_grabbing()
+            self.live_view_btn.setText("Stop Live")
+        else:
+            # 停止实时视图
+            self.update_log("Stopping live view...")
+            if self.camera_worker.is_grabbing:
+                self.stop_grabbing()
+            self.live_view_btn.setText("Live View")
+
+    def snap_image(self):
+        """Snap a single image"""
+        self.update_log("Taking snapshot...")
+        self.grab_single()
+
+    def save_current_image(self):
+        """Save the current image"""
+        if not hasattr(self.camera_worker, 'last_image_data') or not self.camera_worker.last_image_data:
+            QMessageBox.warning(self, "Warning", "No image to save")
+            return
+
+        # 生成文件名
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        default_name = f"camera_image_{timestamp}.bmp"
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Image",
+            default_name,
+            "BMP Files (*.bmp);;All Files (*.*)"
+        )
+
+        if file_path:
+            # 触发保存
+            self.update_log(f"Saving image to: {file_path}")
+            self.camera_worker.trigger_save_image(file_path)
 
     def update_fps(self):
         """Update FPS display"""
@@ -1183,29 +1634,6 @@ class CameraControlWidget(QWidget):
             self.fps_label.setText(f"FPS: {fps:.1f}")
         self.last_fps_time = current_time
         self.frame_count = 0
-
-    def save_image(self):
-        """Save the last grabbed image"""
-        if not hasattr(self, 'last_payload') or self.last_payload is None:
-            QMessageBox.warning(self, "Warning", "No image to save")
-            return
-
-        file_path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Save Image",
-            f"image_frame_{self.last_payload['frame_id']}.bmp",
-            "BMP Files (*.bmp);;JPEG Files (*.jpg *.jpeg);;TIFF Files (*.tiff);;PNG Files (*.png);;All Files (*.*)"
-        )
-
-        if file_path:
-            try:
-                # For now, just log the save attempt
-                # You'll need to implement the actual saving based on your SciCam SDK
-                self.update_log(f"Image save requested for: {file_path}")
-                self.update_log("Note: Image saving implementation requires SciCam SDK functions")
-
-            except Exception as e:
-                self.update_log(f"Error saving image: {str(e)}")
 
     def get_sdk_version(self):
         """Get SDK version information"""
