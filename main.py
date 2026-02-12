@@ -1059,7 +1059,16 @@ class MainWindow(QMainWindow):
                     plots=True,
                     workers=0,
                     patience=50,  # Early stopping patience
-                    seed=42
+                    seed=42,
+
+                    # --- NEW PARAMETERS ADDED HERE ---
+                    hsv_h=0.0,  # Set Hue to 0.0: Stops the AI from "recoloring" your red box to green/blue
+                    hsv_s=0.0,  # Set Saturation to 0.0: Keeps colors from becoming gray or neon
+                    hsv_v=0.2,  # (Optional) Value 0.2: Allows slight brightness changes for light/shadow
+                    degrees=0.0,  # Set to 0.0: No rotation (since your orientation is fixed)
+                    fliplr=0.0,  # Set to 0.0: No horizontal flipping
+                    flipud=0.0,  # Set to 0.0: No vertical flipping
+                    translate=0.05  # 0.05: Allows for that 5cm "offset" or movement you mentioned
                 )
             except KeyboardInterrupt:
                 print("Training interrupted by user")
