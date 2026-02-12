@@ -1,9 +1,6 @@
 import sys
-import os
-import ctypes
 import time
 from datetime import datetime
-from typing import Optional, List
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                                QHBoxLayout, QGroupBox, QPushButton, QLabel,
                                QTextEdit, QTabWidget, QTableWidget, QTableWidgetItem,
@@ -15,7 +12,6 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from PySide6.QtCore import Qt, QTimer, Signal, QThread, Slot
 from PySide6.QtGui import QFont, QColor, QPalette, QBrush
 
-# Import the GetEnumName function from the original console script
 from SciCam_class import *
 import socket
 import struct
@@ -303,8 +299,6 @@ class CameraWorker(QThread):
 
         except Exception as e:
             self.log_signal.emit(f"Error closing device: {str(e)}")
-
-
 
     def run(self):
         """Continuous grabbing thread"""
@@ -893,25 +887,19 @@ class ImageDisplayWidget(QWidget):
 
         self.zoom_in_btn = QPushButton("+")
         self.zoom_in_btn.clicked.connect(self.zoom_in)
-        self.zoom_in_btn.setFixedSize(30, 30)
         self.zoom_in_btn.setToolTip("Zoom In")
 
         self.zoom_out_btn = QPushButton("-")
         self.zoom_out_btn.clicked.connect(self.zoom_out)
-        self.zoom_out_btn.setFixedSize(30, 30)
         self.zoom_out_btn.setToolTip("Zoom Out")
 
         self.zoom_fit_btn = QPushButton("Fit")
         self.zoom_fit_btn.clicked.connect(self.zoom_fit)
         self.zoom_fit_btn.setToolTip("Fit to Window")
 
-        self.zoom_100_btn = QPushButton("100%")
-        self.zoom_100_btn.clicked.connect(self.zoom_100)
-        self.zoom_100_btn.setToolTip("Actual Size")
-
         self.zoom_label = QLabel("100%")
         self.zoom_label.setAlignment(Qt.AlignCenter)
-        self.zoom_label.setFixedWidth(60)
+        #self.zoom_label.setFixedWidth(60)
 
         self.size_label = QLabel("No image")
         self.size_label.setAlignment(Qt.AlignRight)
@@ -920,7 +908,6 @@ class ImageDisplayWidget(QWidget):
         toolbar_layout.addWidget(self.zoom_in_btn)
         toolbar_layout.addWidget(self.zoom_out_btn)
         toolbar_layout.addWidget(self.zoom_fit_btn)
-        toolbar_layout.addWidget(self.zoom_100_btn)
         toolbar_layout.addWidget(self.zoom_label)
         toolbar_layout.addStretch()
         toolbar_layout.addWidget(self.size_label)
@@ -1071,12 +1058,6 @@ class ImageDisplayWidget(QWidget):
                 self.scale_factor = min(scale_x, scale_y, 1.0)
                 self.update_display()
 
-    def zoom_100(self):
-        """Zoom to 100%"""
-        if self.current_image:
-            self.scale_factor = 1.0
-            self.update_display()
-
     def clear_image(self):
         """Clear the displayed image"""
         self.current_image = None
@@ -1106,13 +1087,13 @@ class CameraControlWidget(QWidget):
         main_layout = QVBoxLayout()
 
         # 标题
-        title_label = QLabel("SciCamera Control Panel")
-        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title_font = QFont()
-        title_font.setPointSize(16)
-        title_font.setBold(True)
-        title_label.setFont(title_font)
-        main_layout.addWidget(title_label)
+        # #title_label = QLabel("SciCamera Control Panel")
+        # title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # title_font = QFont()
+        # title_font.setPointSize(16)
+        # title_font.setBold(True)
+        # title_label.setFont(title_font)
+        # main_layout.addWidget(title_label)
 
         # 创建主分割器
         splitter = QSplitter(Qt.Horizontal)
@@ -1158,14 +1139,10 @@ class CameraControlWidget(QWidget):
         self.live_view_btn.clicked.connect(self.toggle_live_view)
         self.live_view_btn.setCheckable(True)
 
-        self.snap_btn = QPushButton("Snap")
-        self.snap_btn.clicked.connect(self.snap_image)
-
         self.save_btn = QPushButton("Save Image")
         self.save_btn.clicked.connect(self.save_current_image)
 
         quick_buttons_layout.addWidget(self.live_view_btn)
-        quick_buttons_layout.addWidget(self.snap_btn)
         quick_buttons_layout.addWidget(self.save_btn)
         quick_buttons_layout.addStretch()
 
@@ -1287,22 +1264,22 @@ class CameraControlWidget(QWidget):
         # Acquisition control buttons
         acq_button_layout = QHBoxLayout()
 
-        self.start_grab_btn = QPushButton("Start Grabbing")
-        self.start_grab_btn.clicked.connect(self.start_grabbing)
-        self.start_grab_btn.setEnabled(False)
+        # self.start_grab_btn = QPushButton("Start Grabbing")
+        # self.start_grab_btn.clicked.connect(self.start_grabbing)
+        # self.start_grab_btn.setEnabled(False)
 
-        self.stop_grab_btn = QPushButton("Stop Grabbing")
-        self.stop_grab_btn.clicked.connect(self.stop_grabbing)
-        self.stop_grab_btn.setEnabled(False)
+        # self.stop_grab_btn = QPushButton("Stop Grabbing")
+        # self.stop_grab_btn.clicked.connect(self.stop_grabbing)
+        # self.stop_grab_btn.setEnabled(False)
 
-        self.single_grab_btn = QPushButton("Grab Single")
-        self.single_grab_btn.clicked.connect(self.grab_single)
-        self.single_grab_btn.setEnabled(False)
+        # self.single_grab_btn = QPushButton("Grab Single")
+        # self.single_grab_btn.clicked.connect(self.grab_single)
+        # self.single_grab_btn.setEnabled(False)
 
-        acq_button_layout.addWidget(self.start_grab_btn)
-        acq_button_layout.addWidget(self.stop_grab_btn)
-        acq_button_layout.addWidget(self.single_grab_btn)
-        acq_button_layout.addStretch()
+        #acq_button_layout.addWidget(self.start_grab_btn)
+        # acq_button_layout.addWidget(self.stop_grab_btn)
+        # acq_button_layout.addWidget(self.single_grab_btn)
+        # acq_button_layout.addStretch()
 
         layout.addLayout(acq_button_layout)
 
@@ -1454,10 +1431,9 @@ class CameraControlWidget(QWidget):
 
             if success:
                 self.close_btn.setEnabled(True)
-                self.start_grab_btn.setEnabled(True)
-                self.single_grab_btn.setEnabled(True)
+                #self.start_grab_btn.setEnabled(True)
+                #self.single_grab_btn.setEnabled(True)
                 self.live_view_btn.setEnabled(True)
-                self.snap_btn.setEnabled(True)
                 self.save_btn.setEnabled(True)
                 self.device_status_label.setText("Device: Connected")
                 self.camera_status_label.setText("Camera: Open")
@@ -1472,16 +1448,25 @@ class CameraControlWidget(QWidget):
         self.camera_worker.close_device()
         self.close_btn.setEnabled(False)
         self.open_btn.setEnabled(True)
-        self.start_grab_btn.setEnabled(False)
-        self.stop_grab_btn.setEnabled(False)
-        self.single_grab_btn.setEnabled(False)
+        #self.start_grab_btn.setEnabled(False)
+        #self.stop_grab_btn.setEnabled(False)
+        #self.single_grab_btn.setEnabled(False)
         self.live_view_btn.setEnabled(False)
-        self.snap_btn.setEnabled(False)
         self.save_btn.setEnabled(False)
         self.device_status_label.setText("Device: Not Connected")
         self.camera_status_label.setText("Camera: Not Open")
         self.grabbing_status_label.setText("Grabbing: Not Active")
         self.update_log("Device closed")
+        self.clear_device_selection()
+
+    def clear_device_selection(self):
+        """Clear the device table selection"""
+        self.device_table.clearSelection()
+        self.current_device_index = -1
+        self.device_info_widget.update_info(None)
+
+        # Reset the device info widget
+        self.device_info_widget.info_text.setText("No device selected")
 
     def start_grabbing(self):
         """Start continuous grabbing"""
@@ -1498,19 +1483,19 @@ class CameraControlWidget(QWidget):
             # Start grabbing
             success = self.camera_worker.start_grabbing(timeout, buffer_count, strategy)
             if success:
-                self.start_grab_btn.setEnabled(False)
-                self.stop_grab_btn.setEnabled(True)
-                self.single_grab_btn.setEnabled(False)
+                #self.start_grab_btn.setEnabled(False)
+                #self.stop_grab_btn.setEnabled(True)
+                #self.single_grab_btn.setEnabled(False)
                 self.live_view_btn.setChecked(True)
                 self.grabbing_status_label.setText("Grabbing: Active")
                 self.update_log("Continuous grabbing started")
             else:
-                self.start_grab_btn.setEnabled(True)
+                #self.start_grab_btn.setEnabled(True)
                 self.update_log("Failed to start continuous grabbing")
 
         except Exception as e:
             self.update_log(f"Error starting grabbing: {str(e)}")
-            self.start_grab_btn.setEnabled(True)
+            #self.start_grab_btn.setEnabled(True)
 
     def stop_grabbing(self):
         """Stop continuous grabbing"""
@@ -1518,9 +1503,9 @@ class CameraControlWidget(QWidget):
             self.update_log("Stopping continuous grabbing...")
             success = self.camera_worker.stop_grabbing()
             if success:
-                self.start_grab_btn.setEnabled(True)
-                self.stop_grab_btn.setEnabled(False)
-                self.single_grab_btn.setEnabled(True)
+                #self.start_grab_btn.setEnabled(True)
+                #self.stop_grab_btn.setEnabled(False)
+                #self.single_grab_btn.setEnabled(True)
                 self.live_view_btn.setChecked(False)
                 self.grabbing_status_label.setText("Grabbing: Not Active")
                 self.update_log("Continuous grabbing stopped")
@@ -1534,7 +1519,7 @@ class CameraControlWidget(QWidget):
 
     def grab_single(self):
         """Grab a single image"""
-        self.single_grab_btn.setEnabled(False)
+        #self.single_grab_btn.setEnabled(False)
         self.update_log("Grabbing single image...")
 
         try:
@@ -1557,11 +1542,13 @@ class CameraControlWidget(QWidget):
         except Exception as e:
             self.update_log(f"Error grabbing single image: {str(e)}")
 
-        self.single_grab_btn.setEnabled(True)
+        #self.single_grab_btn.setEnabled(True)
 
     def on_image_grabbed(self, image_data, width, height):
         """Handle grabbed image"""
         self.frame_count += 1
+
+        current_scale_factor = self.image_display.scale_factor
 
         # 更新图像显示
         self.image_display.display_image(
@@ -1570,6 +1557,12 @@ class CameraControlWidget(QWidget):
             height,
             self.camera_worker.last_pixel_type
         )
+
+        # 恢复缩放因子（如果不是首次显示）
+        if hasattr(self.image_display, 'current_image') and self.image_display.current_image:
+            if current_scale_factor != 1.0:  # 如果不是默认缩放
+                self.image_display.scale_factor = current_scale_factor
+                self.image_display.update_display()
 
         # 更新图像信息
         info_str = f"""
@@ -1597,11 +1590,6 @@ class CameraControlWidget(QWidget):
             if self.camera_worker.is_grabbing:
                 self.stop_grabbing()
             self.live_view_btn.setText("Live View")
-
-    def snap_image(self):
-        """Snap a single image"""
-        self.update_log("Taking snapshot...")
-        self.grab_single()
 
     def save_current_image(self):
         """Save the current image"""
@@ -1670,7 +1658,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("SciCamera Control Panel")
+        # self.setWindowTitle("SciCamera Control Panel")
         self.setGeometry(100, 100, 1200, 800)
 
         # Create central widget
@@ -1678,29 +1666,29 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.central_widget)
 
         # Create menu bar
-        self.create_menu_bar()
+        #self.create_menu_bar()
 
         # Apply style
         self.apply_style()
 
-    def create_menu_bar(self):
-        """Create application menu bar"""
-        menubar = self.menuBar()
-
-        # File menu
-        file_menu = menubar.addMenu("File")
-
-        exit_action = file_menu.addAction("Exit")
-        exit_action.triggered.connect(self.close)
-
-        # View menu
-        view_menu = menubar.addMenu("View")
-
-        # Help menu
-        help_menu = menubar.addMenu("Help")
-
-        about_action = help_menu.addAction("About")
-        about_action.triggered.connect(self.show_about)
+    # def create_menu_bar(self):
+    #     """Create application menu bar"""
+    #     menubar = self.menuBar()
+    #
+    #     # File menu
+    #     file_menu = menubar.addMenu("File")
+    #
+    #     exit_action = file_menu.addAction("Exit")
+    #     exit_action.triggered.connect(self.close)
+    #
+    #     # View menu
+    #     view_menu = menubar.addMenu("View")
+    #
+    #     # Help menu
+    #     help_menu = menubar.addMenu("Help")
+    #
+    #     about_action = help_menu.addAction("About")
+    #     about_action.triggered.connect(self.show_about)
 
     def apply_style(self):
         """Apply stylesheet to the application"""
@@ -1761,12 +1749,12 @@ class MainWindow(QMainWindow):
             }
         """)
 
-    def show_about(self):
-        """Show about dialog"""
-        QMessageBox.about(self, "About SciCamera Control Panel",
-                          "SciCamera Control Panel\n\n"
-                          "A PySide6-based GUI for SciCamera SDK\n"
-                          "Provides control and monitoring for SciCamera devices")
+    # def show_about(self):
+    #     """Show about dialog"""
+    #     QMessageBox.about(self, "About SciCamera Control Panel",
+    #                       "SciCamera Control Panel\n\n"
+    #                       "A PySide6-based GUI for SciCamera SDK\n"
+    #                       "Provides control and monitoring for SciCamera devices")
 
 
 def main():
