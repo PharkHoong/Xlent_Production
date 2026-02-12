@@ -310,10 +310,15 @@ class MainWindow(QMainWindow):
 
         # Calibration variables
         self.calibration = CalibrationData()
-        self.awaiting_world_coords = False
-        self.last_pixel_point = None
         self.calibration_points_needed = 9
         self.current_calibration_point = 0
+        self.pending_world_coords = None
+        self.stored_coordinates = []  # Store all received coordinates with their point indices
+        self.calibration_active = False  # Flag to indicate calibration is in progress
+
+        # Camera capture variables
+        self.camera_capturing = False
+        self.auto_capture_enabled = True  # Auto capture when receiving coordinates
 
         # ---------- Calibration Controls ----------
         self.calibration_group = QGroupBox("Calibration Settings")
@@ -328,9 +333,6 @@ class MainWindow(QMainWindow):
         self.calibration_status.setStyleSheet("color: #666; font-weight: bold;")
 
         calibration_buttons = QHBoxLayout()
-        self.start_calibration_btn = QPushButton("🎯 Start Calibration")
-        self.start_calibration_btn.clicked.connect(self.start_calibration)
-        self.start_calibration_btn.setStyleSheet("background-color: #FF9800; color: white; font-weight: bold;")
 
         self.save_calibration_btn = QPushButton("💾 Save Calibration")
         self.save_calibration_btn.clicked.connect(self.save_calibration)
@@ -345,7 +347,6 @@ class MainWindow(QMainWindow):
         self.clear_calibration_btn.clicked.connect(self.clear_calibration)
         self.clear_calibration_btn.setStyleSheet("background-color: #f44336; color: white;")
 
-        calibration_buttons.addWidget(self.start_calibration_btn)
         calibration_buttons.addWidget(self.save_calibration_btn)
         calibration_buttons.addWidget(self.load_calibration_btn)
         calibration_buttons.addWidget(self.clear_calibration_btn)
@@ -381,15 +382,12 @@ class MainWindow(QMainWindow):
         # ---------- TCP Connection Settings ----------
         self.tcp_group = QGroupBox("TCP/IP Connection Settings")
 
-        self.host_edit = QLineEdit("127.0.0.1")
+        self.host_edit = QLineEdit("192.168.2.41")
         self.host_edit.setPlaceholderText("Enter host IP address")
 
         self.port_spin = QSpinBox()
         self.port_spin.setRange(1, 65535)
         self.port_spin.setValue(1220)
-
-        self.message_edit = QLineEdit("ok")
-        self.message_edit.setPlaceholderText("Enter message to send")
 
         self.connect_btn = QPushButton("🔌 Connect")
         self.connect_btn.clicked.connect(self.toggle_tcp_connection)
@@ -406,10 +404,6 @@ class MainWindow(QMainWindow):
             }
         """)
 
-        self.send_btn = QPushButton("📤 Send Message")
-        self.send_btn.clicked.connect(self.send_tcp_message)
-        self.send_btn.setEnabled(False)
-
         # Connection status label
         self.connection_status_label = QLabel("Status: Disconnected")
         self.connection_status_label.setStyleSheet("color: #666; font-style: italic;")
@@ -418,11 +412,9 @@ class MainWindow(QMainWindow):
         tcp_form = QFormLayout()
         tcp_form.addRow("Host:", self.host_edit)
         tcp_form.addRow("Port:", self.port_spin)
-        tcp_form.addRow("Message:", self.message_edit)
 
         tcp_buttons = QHBoxLayout()
         tcp_buttons.addWidget(self.connect_btn)
-        tcp_buttons.addWidget(self.send_btn)
         tcp_buttons.addStretch()
 
         tcp_layout = QVBoxLayout()
@@ -434,7 +426,7 @@ class MainWindow(QMainWindow):
         # ---------- Image Display Label ----------
         self.image_label = ClickableImageLabel()
         self.image_label.setAlignment(Qt.AlignCenter)
-        self.image_label.setText("No image captured yet")
+        self.image_label.setText("Waiting for coordinates to capture image...")
         self.image_label.setStyleSheet("""
             QLabel {
                 border: 2px dashed #ccc;
@@ -450,32 +442,8 @@ class MainWindow(QMainWindow):
         self.image_info_label.setAlignment(Qt.AlignCenter)
         self.image_info_label.setStyleSheet("color: #666; font-size: 12px;")
 
-        # ---------- Capture Button ----------
-        self.capture_btn = QPushButton("📷 Capture from Camera")
-        self.capture_btn.clicked.connect(self.capture_from_camera)
-        self.capture_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #2196F3;
-                color: white;
-                font-weight: bold;
-                padding: 8px 20px;
-                border-radius: 4px;
-                font-size: 14px;
-            }
-            QPushButton:hover {
-                background-color: #1976D2;
-            }
-            QPushButton:disabled {
-                background-color: #cccccc;
-            }
-        """)
-
-        if not CAMERA_AVAILABLE:
-            self.capture_btn.setEnabled(False)
-            self.capture_btn.setToolTip("Camera module not available")
-
         # ---------- Status Bar ----------
-        self.status_label = QLabel("Ready")
+        self.status_label = QLabel("Ready - Connect to server to start")
         self.statusBar().addWidget(self.status_label)
 
         # ---------- TCP Messages Display (Scrollable) ----------
@@ -521,17 +489,11 @@ class MainWindow(QMainWindow):
         self.tcp_messages_group.setLayout(tcp_messages_layout)
 
         # ---------- Layout ----------
-        # Button bar at top
-        top_bar = QHBoxLayout()
-        top_bar.addWidget(self.capture_btn)
-        top_bar.addStretch()
-
         # Main layout
         main_layout = QVBoxLayout()
         main_layout.addWidget(self.tcp_group)
         main_layout.addWidget(self.calibration_group)
         main_layout.addWidget(self.coord_group)
-        main_layout.addLayout(top_bar)
         main_layout.addWidget(self.image_label, 1)  # Expand image area
         main_layout.addWidget(self.image_info_label)
         main_layout.addWidget(self.tcp_messages_group)
@@ -542,304 +504,40 @@ class MainWindow(QMainWindow):
         container.setLayout(main_layout)
         self.setCentralWidget(container)
 
-    # ---------- Calibration Methods ----------
-    def start_calibration(self):
-        """Start calibration process"""
-        if not self.is_connected:
-            QMessageBox.warning(self, "Not Connected", "Please connect to TCP server first")
-            return
+        # Ask for capture folder at startup
+        self.select_capture_folder()
 
-        # Reset calibration data
-        self.calibration = CalibrationData()
-        self.image_label.clear_points()
-        self.current_calibration_point = 0
-        self.awaiting_world_coords = False
-
-        # Update UI
-        self.calibration_progress.setValue(0)
-        self.calibration_status.setText("Calibration started - 0/9 points")
-        self.calibration_point_label.setText("Calibration point: 0/9")
-        self.start_calibration_btn.setEnabled(False)
-        self.save_calibration_btn.setEnabled(False)
-
-        self.update_tcp_messages("[Calibration] Started - Click 9 points on image")
-        QMessageBox.information(self, "Calibration Started",
-                                "Click 9 points on the image. After each click, the system will wait for world coordinates from TCP.")
-
-    def add_calibration_point(self, pixel_point, world_point):
-        """Add a calibration point pair"""
-        # Convert QPoint to tuple
-        pixel_tuple = (pixel_point.x(), pixel_point.y())
-        world_tuple = world_point
-
-        # Add to calibration data
-        self.calibration.add_point_pair(pixel_tuple, world_tuple)
-
-        # Update progress
-        self.current_calibration_point += 1
-        self.calibration_progress.setValue(self.current_calibration_point)
-        self.calibration_point_label.setText(f"Calibration point: {self.current_calibration_point}/9")
-
-        # Update status
-        if self.current_calibration_point >= self.calibration_points_needed:
-            self.calibration_status.setText("Calibration complete - Performing calibration...")
-            self.perform_calibration_calculation()
-        else:
-            self.calibration_status.setText(f"Calibration - {self.current_calibration_point}/9 points")
-
-        # Add point to image display
-        self.image_label.add_calibration_point(
-            pixel_point.x() * self.image_label.scale_factor,
-            pixel_point.y() * self.image_label.scale_factor,
-            pixel_point.x(),
-            pixel_point.y(),
-            world_tuple[0],
-            world_tuple[1]
-        )
-
-        return self.current_calibration_point
-
-    def perform_calibration_calculation(self):
-        """Perform the actual calibration calculation"""
-        success, message = self.calibration.perform_calibration()
-
-        if success:
-            self.calibration_status.setText("Calibration successful! Save calibration file.")
-            self.save_calibration_btn.setEnabled(True)
-            self.start_calibration_btn.setEnabled(True)
-
-            # Test calibration with first point
-            test_pixel = self.calibration.pixel_points[0]
-            test_world = self.calibration.pixel_to_world(test_pixel)
-
-            self.update_tcp_messages(f"[Calibration] ✅ Successful!")
-            self.update_tcp_messages(f"[Calibration] Test: Pixel {test_pixel} → World {test_world}")
-
-            QMessageBox.information(self, "Calibration Successful",
-                                    f"Calibration completed successfully!\n\n"
-                                    f"Click 'Save Calibration' to save the calibration file.")
-        else:
-            self.calibration_status.setText(f"Calibration failed: {message}")
-            self.start_calibration_btn.setEnabled(True)
-
-            self.update_tcp_messages(f"[Calibration] ❌ Failed: {message}")
-            QMessageBox.warning(self, "Calibration Failed", message)
-
-    def save_calibration(self):
-        """Save calibration to file"""
-        if not self.calibration.is_calibrated:
-            QMessageBox.warning(self, "Not Calibrated", "Please perform calibration first")
-            return
-
-        filepath, _ = QFileDialog.getSaveFileName(
-            self, "Save Calibration File",
-            "calibration.json",
-            "JSON Files (*.json)"
-        )
-
-        if filepath:
-            success, message = self.calibration.save_calibration(filepath)
-            if success:
-                self.update_tcp_messages(f"[Calibration] 💾 Saved: {filepath}")
-                QMessageBox.information(self, "Calibration Saved", message)
-            else:
-                QMessageBox.warning(self, "Save Failed", message)
-
-    def load_calibration(self):
-        """Load calibration from file"""
-        filepath, _ = QFileDialog.getOpenFileName(
-            self, "Load Calibration File",
-            "", "JSON Files (*.json)"
-        )
-
-        if filepath:
-            success, message = self.calibration.load_calibration(filepath)
-            if success:
-                # Update UI
-                self.calibration_progress.setValue(len(self.calibration.pixel_points))
-                self.calibration_status.setText(f"Calibration loaded - {len(self.calibration.pixel_points)} points")
-                self.save_calibration_btn.setEnabled(True)
-                self.start_calibration_btn.setEnabled(True)
-
-                # Clear and re-add points to image
-                self.image_label.clear_points()
-                for i, (pixel, world) in enumerate(zip(self.calibration.pixel_points, self.calibration.world_points)):
-                    self.image_label.add_calibration_point(
-                        pixel[0] * self.image_label.scale_factor,
-                        pixel[1] * self.image_label.scale_factor,
-                        pixel[0],
-                        pixel[1],
-                        world[0],
-                        world[1]
-                    )
-
-                self.update_tcp_messages(f"[Calibration] 📂 Loaded: {filepath}")
-                QMessageBox.information(self, "Calibration Loaded", message)
-            else:
-                QMessageBox.warning(self, "Load Failed", message)
-
-    def clear_calibration(self):
-        """Clear all calibration data"""
-        reply = QMessageBox.question(
-            self, "Clear Calibration",
-            "Are you sure you want to clear all calibration data?",
-            QMessageBox.Yes | QMessageBox.No
-        )
-
-        if reply == QMessageBox.Yes:
-            self.calibration = CalibrationData()
-            self.image_label.clear_points()
-            self.calibration_progress.setValue(0)
-            self.calibration_status.setText("Not calibrated - 0/9 points")
-            self.calibration_point_label.setText("Calibration point: 0/9")
-            self.save_calibration_btn.setEnabled(False)
-            self.start_calibration_btn.setEnabled(True)
-            self.awaiting_world_coords = False
-
-            self.update_tcp_messages("[Calibration] Cleared all calibration data")
-
-    # ---------- Pixel Coordinate Methods ----------
-    def on_image_clicked(self, pixel_point, scale_factor):
-        """Handle image click events"""
-        # Update pixel coordinates display
-        self.pixel_coord_label.setText(f"Pixel: ({pixel_point.x()}, {pixel_point.y()})")
-
-        # If calibrated, convert to world coordinates
-        if self.calibration.is_calibrated:
-            world_point = self.calibration.pixel_to_world((pixel_point.x(), pixel_point.y()))
-            if world_point:
-                self.world_coord_label.setText(f"World: ({world_point[0]:.2f}, {world_point[1]:.2f})")
-                self.update_tcp_messages(
-                    f"📍 Pixel ({pixel_point.x()}, {pixel_point.y()}) → World ({world_point[0]:.2f}, {world_point[1]:.2f})")
-            else:
-                self.world_coord_label.setText("World: Conversion failed")
-        else:
-            # If in calibration mode and connected, send "ok" to get world coordinates
-            if self.is_connected and self.start_calibration_btn.isEnabled() == False:
-                self.last_pixel_point = pixel_point
-                self.awaiting_world_coords = True
-
-                # Send "ok" to TCP server
-                try:
-                    self.tcp_socket.sendall("ok".encode('utf-8'))
-                    self.tcp_signals.message_sent.emit("ok")
-                    self.update_tcp_messages(f"[Calibration] Sent 'ok', waiting for world coordinates...")
-                except socket.error as e:
-                    self.update_tcp_messages(f"Error sending 'ok': {str(e)}")
-            else:
-                self.world_coord_label.setText("World: Not calibrated")
-                self.update_tcp_messages(f"📍 Pixel click: ({pixel_point.x()}, {pixel_point.y()})")
-
-        self.status_label.setText(f"Clicked at pixel: ({pixel_point.x()}, {pixel_point.y()})")
-
-    # ---------- TCP Message Processing ----------
-    def process_world_coordinates(self, message):
-        """Parse world coordinates from TCP message"""
-        try:
-            # Try to parse as "x,y" format
-            if ',' in message:
-                parts = message.split(',')
-                if len(parts) >= 2:
-                    world_x = float(parts[0].strip())
-                    world_y = float(parts[1].strip())
-
-                    self.update_tcp_messages(f"📥 World coordinates received: ({world_x}, {world_y})")
-                    return (world_x, world_y)
-
-            # Try to parse as JSON
-            try:
-                data = json.loads(message)
-                if 'x' in data and 'y' in data:
-                    world_x = float(data['x'])
-                    world_y = float(data['y'])
-                    self.update_tcp_messages(f"📥 World coordinates received: ({world_x}, {world_y})")
-                    return (world_x, world_y)
-            except:
-                pass
-
-            return None
-
-        except Exception as e:
-            self.update_tcp_messages(f"Error parsing world coordinates: {str(e)}")
-            return None
-
-    # ---------- TCP/IP Connection Methods ----------
-    def on_tcp_message_received(self, message):
-        """Handle received TCP messages"""
-        timestamp = time.strftime("%H:%M:%S")
-
-        # If awaiting world coordinates for calibration
-        if self.awaiting_world_coords and self.last_pixel_point:
-            world_coords = self.process_world_coordinates(message)
-            if world_coords:
-                # Add calibration point
-                point_num = self.add_calibration_point(self.last_pixel_point, world_coords)
-                self.update_tcp_messages(
-                    f"[Calibration] Point {point_num}: Pixel ({self.last_pixel_point.x()}, {self.last_pixel_point.y()}) ↔ World ({world_coords[0]}, {world_coords[1]})")
-
-                self.awaiting_world_coords = False
-                self.last_pixel_point = None
-
-                # If we have all points, perform calibration
-                if point_num >= self.calibration_points_needed:
-                    QTimer.singleShot(1000, self.perform_calibration_calculation)
-            else:
-                self.update_tcp_messages(f"[{timestamp}] 📥 Received: {message}")
-                self.update_tcp_messages(f"[Calibration] Failed to parse world coordinates from: {message}")
-        else:
-            # Regular message
-            self.update_tcp_messages(f"[{timestamp}] 📥 Received: {message}")
-
-    def on_tcp_message_sent(self, message):
-        """Handle sent TCP messages"""
-        timestamp = time.strftime("%H:%M:%S")
-        self.update_tcp_messages(f"[{timestamp}] 📤 Sent: {message}")
-
-    def update_tcp_messages(self, message):
-        """Update TCP messages display with scrollable text"""
-        # Get current text
-        current_text = self.tcp_messages_display.toPlainText()
-
-        # Add new message
-        if current_text:
-            new_text = f"{message}\n{current_text}"
-        else:
-            new_text = message
-
-        # Update the text edit
-        self.tcp_messages_display.setPlainText(new_text)
-
-        # Keep cursor at the beginning to show newest messages
-        cursor = self.tcp_messages_display.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.Start)
-        self.tcp_messages_display.setTextCursor(cursor)
-
-    def clear_tcp_messages(self):
-        """Clear all TCP messages"""
-        self.tcp_messages_display.clear()
-        self.status_label.setText("Messages cleared")
-
-    # Rest of the TCP connection methods remain the same...
-    # (connect_tcp, disconnect_tcp, start_listening, send_tcp_message, on_tcp_connection_status)
-
-    # ---------- Camera Methods ----------
-    def capture_from_camera(self):
-        """Start camera capture in a separate thread, save to chosen folder"""
-        # Ask for folder only once
+    def select_capture_folder(self):
+        """Select folder to save captured images"""
         if self.capture_folder is None:
             folder = QFileDialog.getExistingDirectory(
                 self,
                 "Select Folder to Save Captured Images"
             )
-            if not folder:
+            if folder:
+                self.capture_folder = folder
+                self.status_label.setText(f"Images will be saved to: {os.path.basename(folder)}")
+                self.update_tcp_messages(f"[System] 📁 Capture folder selected: {folder}")
+            else:
+                # If no folder selected, try again or use default
+                self.capture_folder = os.path.join(os.path.expanduser("~"), "Pictures", "CameraCaptures")
+                os.makedirs(self.capture_folder, exist_ok=True)
+                self.status_label.setText(f"Using default folder: {os.path.basename(self.capture_folder)}")
+                self.update_tcp_messages(f"[System] 📁 Using default capture folder: {self.capture_folder}")
+
+    # ---------- Camera Capture Methods ----------
+    def capture_from_camera(self):
+        """Start camera capture in a separate thread"""
+        if self.camera_capturing:
+            return
+
+        if self.capture_folder is None:
+            self.select_capture_folder()
+            if self.capture_folder is None:
                 return
-            self.capture_folder = folder
 
-        self.capture_btn.setEnabled(False)
-        self.capture_btn.setText("Capturing...")
+        self.camera_capturing = True
         self.status_label.setText("Capturing image...")
-
-        # Show capturing message
         self.image_label.setText("Capturing image...\nPlease wait")
         self.image_label.setStyleSheet("""
             QLabel {
@@ -872,9 +570,14 @@ class MainWindow(QMainWindow):
 
                 # Emit signal to update GUI
                 self.camera_signals.finished.emit(success, message, image_path)
+                self.camera_capturing = False
 
             # Call the camera capture function
-            AutoCaptureFlow(callback=callback)
+            if CAMERA_AVAILABLE:
+                AutoCaptureFlow(callback=callback)
+            else:
+                self.camera_signals.finished.emit(False, "Camera module not available", None)
+                self.camera_capturing = False
 
         thread = threading.Thread(target=run_capture, daemon=True)
         thread.start()
@@ -934,36 +637,24 @@ class MainWindow(QMainWindow):
         if self.calibration.is_calibrated:
             info_text = f"{os.path.basename(image_path)} | {dimensions} | Calibrated | Click to convert pixel→world"
         else:
-            info_text = f"{os.path.basename(image_path)} | {dimensions} | Not calibrated | Click for calibration"
+            info_text = f"{os.path.basename(image_path)} | {dimensions} | Not calibrated | Click points to calibrate"
 
         self.image_info_label.setText(info_text)
 
         # Log image load
         timestamp = time.strftime("%H:%M:%S")
-        self.update_tcp_messages(f"[{timestamp}] 📸 Loaded image: {os.path.basename(image_path)}")
+        self.update_tcp_messages(f"[{timestamp}] 📸 Captured image: {os.path.basename(image_path)}")
 
     def on_camera_finished(self, success, message, image_path):
         """Handle camera capture completion"""
-        self.capture_btn.setEnabled(True)
-        self.capture_btn.setText("Capture from Camera")
-
         if success and image_path:
             # Display the captured image
             self.display_image(image_path)
-
-            # Update status
             self.status_label.setText(f"Image saved: {os.path.basename(image_path)}")
 
             # Log success
             timestamp = time.strftime("%H:%M:%S")
             self.update_tcp_messages(f"[{timestamp}] ✅ Image captured successfully")
-
-            # Show success message
-            QMessageBox.information(
-                self,
-                "Capture Successful",
-                f"Image captured and saved to:\n{image_path}"
-            )
         else:
             # Show error state
             self.image_label.setText("Capture Failed")
@@ -978,22 +669,366 @@ class MainWindow(QMainWindow):
                 }
             """)
             self.image_info_label.setText("")
-
             self.status_label.setText("Capture failed")
 
             # Log error
             timestamp = time.strftime("%H:%M:%S")
             self.update_tcp_messages(f"[{timestamp}] ❌ Capture failed: {message}")
 
-            QMessageBox.critical(
-                self,
-                "Capture Failed",
-                f"Camera capture failed!\n{message}"
-            )
+    # ---------- Calibration Methods ----------
+    def start_calibration(self):
+        """Start calibration process automatically"""
+        self.calibration_active = True
+        self.calibration_status.setText("Calibration in progress - Click 9 points")
+        self.update_tcp_messages("[Calibration] 🎯 Calibration started - Click 9 points on the image")
 
-    # The remaining TCP connection methods (connect_tcp, disconnect_tcp, etc.)
-    # should be copied from the previous version as they haven't changed
+        # Check if we already have stored coordinates for point 1
+        next_point = self.current_calibration_point + 1
+        coordinate_found = False
 
+        for stored in self.stored_coordinates:
+            if stored['index'] == next_point:
+                self.pending_world_coords = stored['coords']
+                self.update_tcp_messages(
+                    f"[Calibration] 📦 Using stored coordinate for point {next_point}: "
+                    f"({stored['coords'][0]}, {stored['coords'][1]}) - Click on image to bind")
+                coordinate_found = True
+                break
+
+        # If no stored coordinate found, send C_START
+        if not coordinate_found:
+            try:
+                self.tcp_socket.sendall("C_START".encode('utf-8'))
+                self.tcp_signals.message_sent.emit("C_START")
+                self.update_tcp_messages("[Calibration] 🔵 Sent 'C_START' - Waiting for world coordinate...")
+            except socket.error as e:
+                self.update_tcp_messages(f"Error sending C_START: {str(e)}")
+
+    def add_calibration_point(self, pixel_point, world_point):
+        """Add a calibration point pair"""
+        # Convert QPoint to tuple
+        pixel_tuple = (pixel_point.x(), pixel_point.y())
+        world_tuple = world_point
+
+        # Add to calibration data
+        self.calibration.add_point_pair(pixel_tuple, world_tuple)
+
+        # Update progress
+        self.current_calibration_point += 1
+        self.calibration_progress.setValue(self.current_calibration_point)
+        self.calibration_point_label.setText(f"Calibration point: {self.current_calibration_point}/9")
+
+        # Update status
+        if self.current_calibration_point >= self.calibration_points_needed:
+            self.calibration_status.setText("Calibration complete - Performing calibration...")
+            self.perform_calibration_calculation()
+        else:
+            self.calibration_status.setText(f"Calibration - {self.current_calibration_point}/9 points")
+
+        # Add point to image display
+        self.image_label.add_calibration_point(
+            pixel_point.x() * self.image_label.scale_factor,
+            pixel_point.y() * self.image_label.scale_factor,
+            pixel_point.x(),
+            pixel_point.y(),
+            world_tuple[0],
+            world_tuple[1]
+        )
+
+        return self.current_calibration_point
+
+    def perform_calibration_calculation(self):
+        """Perform the actual calibration calculation"""
+        success, message = self.calibration.perform_calibration()
+
+        if success:
+            self.calibration_status.setText("Calibration successful! Save calibration file.")
+            self.save_calibration_btn.setEnabled(True)
+            self.calibration_active = False
+
+            # Test calibration with first point
+            test_pixel = self.calibration.pixel_points[0]
+            test_world = self.calibration.pixel_to_world(test_pixel)
+
+            self.update_tcp_messages(f"[Calibration] ✅ Calibration successful!")
+            self.update_tcp_messages(f"[Calibration] Test: Pixel {test_pixel} → World {test_world}")
+
+            QMessageBox.information(self, "Calibration Successful",
+                                    f"Calibration completed successfully!\n\n"
+                                    f"Click 'Save Calibration' to save the calibration file.")
+        else:
+            self.calibration_status.setText(f"Calibration failed: {message}")
+            self.calibration_active = False
+
+            self.update_tcp_messages(f"[Calibration] ❌ Calibration failed: {message}")
+            QMessageBox.warning(self, "Calibration Failed", message)
+
+    def save_calibration(self):
+        """Save calibration to file"""
+        if not self.calibration.is_calibrated:
+            QMessageBox.warning(self, "Not Calibrated", "Please perform calibration first")
+            return
+
+        filepath, _ = QFileDialog.getSaveFileName(
+            self, "Save Calibration File",
+            "calibration.json",
+            "JSON Files (*.json)"
+        )
+
+        if filepath:
+            success, message = self.calibration.save_calibration(filepath)
+            if success:
+                self.update_tcp_messages(f"[Calibration] 💾 Saved: {filepath}")
+                QMessageBox.information(self, "Calibration Saved", message)
+            else:
+                QMessageBox.warning(self, "Save Failed", message)
+
+    def load_calibration(self):
+        """Load calibration from file"""
+        filepath, _ = QFileDialog.getOpenFileName(
+            self, "Load Calibration File",
+            "", "JSON Files (*.json)"
+        )
+
+        if filepath:
+            success, message = self.calibration.load_calibration(filepath)
+            if success:
+                # Update UI
+                self.calibration_progress.setValue(len(self.calibration.pixel_points))
+                self.calibration_status.setText(f"Calibration loaded - {len(self.calibration.pixel_points)} points")
+                self.save_calibration_btn.setEnabled(True)
+
+                # Clear and re-add points to image
+                self.image_label.clear_points()
+                for i, (pixel, world) in enumerate(zip(self.calibration.pixel_points, self.calibration.world_points)):
+                    self.image_label.add_calibration_point(
+                        pixel[0] * self.image_label.scale_factor,
+                        pixel[1] * self.image_label.scale_factor,
+                        pixel[0],
+                        pixel[1],
+                        world[0],
+                        world[1]
+                    )
+
+                self.update_tcp_messages(f"[Calibration] 📂 Loaded: {filepath}")
+                QMessageBox.information(self, "Calibration Loaded", message)
+            else:
+                QMessageBox.warning(self, "Load Failed", message)
+
+    def clear_calibration(self):
+        """Clear all calibration data"""
+        reply = QMessageBox.question(
+            self, "Clear Calibration",
+            "Are you sure you want to clear all calibration data?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+
+        if reply == QMessageBox.Yes:
+            self.calibration = CalibrationData()
+            self.image_label.clear_points()
+            self.calibration_progress.setValue(0)
+            self.calibration_status.setText("Not calibrated - 0/9 points")
+            self.calibration_point_label.setText("Calibration point: 0/9")
+            self.save_calibration_btn.setEnabled(False)
+            self.current_calibration_point = 0
+            self.pending_world_coords = None
+            self.stored_coordinates = []
+            self.calibration_active = False
+
+            self.update_tcp_messages("[Calibration] 🧹 Cleared all calibration data")
+
+    # ---------- Pixel Coordinate Methods ----------
+    def on_image_clicked(self, pixel_point, scale_factor):
+        """Handle image click events"""
+        # Update pixel coordinates display
+        self.pixel_coord_label.setText(f"Pixel: ({pixel_point.x()}, {pixel_point.y()})")
+
+        # If calibrated, convert to world coordinates
+        if self.calibration.is_calibrated:
+            world_point = self.calibration.pixel_to_world((pixel_point.x(), pixel_point.y()))
+            if world_point:
+                self.world_coord_label.setText(f"World: ({world_point[0]:.2f}, {world_point[1]:.2f})")
+                self.update_tcp_messages(
+                    f"📍 Pixel ({pixel_point.x()}, {pixel_point.y()}) → World ({world_point[0]:.2f}, {world_point[1]:.2f})")
+            else:
+                self.world_coord_label.setText("World: Conversion failed")
+        else:
+            # If calibration is active and we have pending world coordinates
+            if self.calibration_active and self.pending_world_coords is not None:
+                # Use the pending world coordinates
+                world_coords = self.pending_world_coords
+                self.pending_world_coords = None
+
+                # Add calibration point
+                point_num = self.add_calibration_point(pixel_point, world_coords)
+                self.update_tcp_messages(
+                    f"[Calibration] Point {point_num}: Pixel ({pixel_point.x()}, {pixel_point.y()}) ↔ World ({world_coords[0]}, {world_coords[1]})")
+
+                # Send C_NEXT for next point if calibration not complete
+                if point_num < self.calibration_points_needed:
+                    # Check if we already have the next point stored
+                    next_point = point_num + 1
+                    next_coord_found = False
+
+                    for stored in self.stored_coordinates:
+                        if stored['index'] == next_point:
+                            self.pending_world_coords = stored['coords']
+                            self.update_tcp_messages(
+                                f"[Calibration] 📦 Using stored coordinate for point {next_point}: "
+                                f"({stored['coords'][0]}, {stored['coords'][1]}) - Click on image to bind")
+                            next_coord_found = True
+                            break
+
+                    # If no stored coordinate found, send C_NEXT
+                    if not next_coord_found:
+                        try:
+                            self.tcp_socket.sendall("C_NEXT".encode('utf-8'))
+                            self.tcp_signals.message_sent.emit("C_NEXT")
+                            self.update_tcp_messages(
+                                f"[Calibration] 🔵 Sent 'C_NEXT', waiting for next world coordinate...")
+                        except socket.error as e:
+                            self.update_tcp_messages(f"Error sending C_NEXT: {str(e)}")
+                else:
+                    self.update_tcp_messages("[Calibration] ✅ All 9 points collected - Performing calibration...")
+
+            # If calibration is active but no pending coordinates
+            elif self.calibration_active:
+                self.update_tcp_messages(
+                    f"[Calibration] Clicked at ({pixel_point.x()}, {pixel_point.y()}) but no world coordinate available")
+                self.update_tcp_messages(f"[Calibration] Waiting for server to send coordinates...")
+            else:
+                self.world_coord_label.setText("World: Not calibrated")
+                self.update_tcp_messages(f"📍 Pixel click: ({pixel_point.x()}, {pixel_point.y()})")
+
+        self.status_label.setText(f"Clicked at pixel: ({pixel_point.x()}, {pixel_point.y()})")
+
+    # ---------- TCP Message Processing ----------
+    def process_world_coordinates(self, message):
+        """Parse world coordinates from TCP message"""
+        try:
+            # Parse C_POINT_X_Y format
+            if message.startswith('C_POINT_'):
+                parts = message.split('_')
+                if len(parts) >= 5:  # C, POINT, index, X, Y
+                    point_index = int(parts[2])  # Get the point number (1, 2, 3...)
+                    world_x = float(parts[-2])  # Second last is X
+                    world_y = float(parts[-1])  # Last is Y
+
+                    self.update_tcp_messages(
+                        f"📥 World coordinates received: ({world_x}, {world_y}) for point {point_index}")
+                    return (world_x, world_y, point_index)
+
+            # Fallback: Try to parse as "x,y" format
+            elif ',' in message:
+                parts = message.split(',')
+                if len(parts) >= 2:
+                    world_x = float(parts[0].strip())
+                    world_y = float(parts[1].strip())
+                    self.update_tcp_messages(f"📥 World coordinates received: ({world_x}, {world_y})")
+                    return (world_x, world_y, None)
+
+            # Fallback: Try to parse as JSON
+            try:
+                data = json.loads(message)
+                if 'x' in data and 'y' in data:
+                    world_x = float(data['x'])
+                    world_y = float(data['y'])
+                    self.update_tcp_messages(f"📥 World coordinates received: ({world_x}, {world_y})")
+                    return (world_x, world_y, None)
+            except:
+                pass
+
+            return None
+
+        except Exception as e:
+            self.update_tcp_messages(f"Error parsing world coordinates: {str(e)}")
+            return None
+
+    # ---------- TCP/IP Connection Methods ----------
+    def on_tcp_message_received(self, message):
+        """Handle received TCP messages"""
+        timestamp = time.strftime("%H:%M:%S")
+
+        # Check if this is a coordinate message
+        result = self.process_world_coordinates(message)
+
+        if result:
+            if len(result) == 3:  # C_POINT format with index
+                world_x, world_y, point_index = result
+                world_coords = (world_x, world_y)
+
+                # Store ALL coordinates with their point numbers
+                self.stored_coordinates.append({
+                    'index': point_index,
+                    'coords': world_coords,
+                    'timestamp': timestamp
+                })
+
+                # Sort stored coordinates by index
+                self.stored_coordinates.sort(key=lambda x: x['index'])
+
+                # AUTO CAPTURE CAMERA when coordinate is received
+                if self.auto_capture_enabled and not self.camera_capturing and CAMERA_AVAILABLE:
+                    self.capture_from_camera()
+
+                # If calibration is active, use as pending if it's the next expected point
+                if self.calibration_active:
+                    next_expected_point = self.current_calibration_point + 1
+                    if point_index == next_expected_point:
+                        self.pending_world_coords = world_coords
+                        self.update_tcp_messages(
+                            f"[Calibration] 📦 Stored world coordinates ({world_coords[0]}, {world_coords[1]}) for point {point_index} - Click on image to bind")
+                    else:
+                        self.update_tcp_messages(
+                            f"[Calibration] 📦 Received point {point_index} ({world_coords[0]}, {world_coords[1]}) - Waiting for point {next_expected_point}")
+                else:
+                    # Not in calibration mode, just display and automatically start calibration on first point
+                    self.update_tcp_messages(
+                        f"[{timestamp}] 📥 Received point {point_index}: ({world_coords[0]}, {world_coords[1]})")
+
+                    # Automatically start calibration on first received point
+                    if point_index == 1 and not self.calibration_active and not self.calibration.is_calibrated:
+                        self.start_calibration()
+            else:
+                # Old format without index
+                world_x, world_y, _ = result
+                world_coords = (world_x, world_y)
+                self.update_tcp_messages(
+                    f"[{timestamp}] 📥 Received coordinates: ({world_coords[0]}, {world_coords[1]})")
+        else:
+            # Regular message
+            self.update_tcp_messages(f"[{timestamp}] 📥 Received: {message}")
+
+    def on_tcp_message_sent(self, message):
+        """Handle sent TCP messages"""
+        timestamp = time.strftime("%H:%M:%S")
+        self.update_tcp_messages(f"[{timestamp}] 📤 Sent: {message}")
+
+    def update_tcp_messages(self, message):
+        """Update TCP messages display with scrollable text"""
+        # Get current text
+        current_text = self.tcp_messages_display.toPlainText()
+
+        # Add new message
+        if current_text:
+            new_text = f"{message}\n{current_text}"
+        else:
+            new_text = message
+
+        # Update the text edit
+        self.tcp_messages_display.setPlainText(new_text)
+
+        # Keep cursor at the beginning to show newest messages
+        cursor = self.tcp_messages_display.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.Start)
+        self.tcp_messages_display.setTextCursor(cursor)
+
+    def clear_tcp_messages(self):
+        """Clear all TCP messages"""
+        self.tcp_messages_display.clear()
+        self.status_label.setText("Messages cleared")
+
+    # ---------- TCP Connection Methods ----------
     def toggle_tcp_connection(self):
         """Toggle TCP connection on/off"""
         if self.is_connected:
@@ -1024,6 +1059,10 @@ class MainWindow(QMainWindow):
                     self.tcp_socket.connect((host, port))
                     self.is_connected = True
                     self.tcp_signals.connection_status.emit(f"Connected to {host}:{port}", True)
+
+                    # Send C_START after successful connection
+                    self.tcp_socket.sendall("C_START".encode('utf-8'))
+                    self.tcp_signals.message_sent.emit("C_START")
 
                     # Start listening for messages
                     self.start_listening()
@@ -1061,9 +1100,13 @@ class MainWindow(QMainWindow):
                 background-color: #45a049;
             }
         """)
-        self.send_btn.setEnabled(False)
         self.connection_status_label.setText("Status: Disconnected")
         self.update_tcp_messages("[System] Disconnected from server")
+
+        # Clear stored coordinates on disconnect
+        self.stored_coordinates = []
+        self.pending_world_coords = None
+        self.calibration_active = False
 
     def start_listening(self):
         """Start listening for incoming messages in a separate thread"""
@@ -1090,24 +1133,6 @@ class MainWindow(QMainWindow):
         self.listening_thread = threading.Thread(target=listen_thread, daemon=True)
         self.listening_thread.start()
 
-    def send_tcp_message(self):
-        """Send message through TCP connection"""
-        if not self.is_connected or not self.tcp_socket:
-            QMessageBox.warning(self, "Not Connected", "Not connected to server")
-            return
-
-        message = self.message_edit.text().strip()
-        if not message:
-            QMessageBox.warning(self, "Empty Message", "Please enter a message to send")
-            return
-
-        try:
-            self.tcp_socket.sendall(message.encode('utf-8'))
-            self.tcp_signals.message_sent.emit(message)
-        except socket.error as e:
-            self.update_tcp_messages(f"Error sending message: {str(e)}")
-            self.disconnect_tcp()
-
     def on_tcp_connection_status(self, message, is_connected):
         """Handle TCP connection status changes"""
         QTimer.singleShot(0, lambda: self._update_connection_status(message, is_connected))
@@ -1130,7 +1155,6 @@ class MainWindow(QMainWindow):
                     background-color: #d32f2f;
                 }
             """)
-            self.send_btn.setEnabled(True)
             self.update_tcp_messages(f"[System] Connected to server")
         else:
             self.connect_btn.setText("🔌 Connect")
@@ -1146,7 +1170,6 @@ class MainWindow(QMainWindow):
                     background-color: #45a049;
                 }
             """)
-            self.send_btn.setEnabled(False)
             self.update_tcp_messages(f"[System] {message}")
 
         self.connection_status_label.setText(f"Status: {message}")
