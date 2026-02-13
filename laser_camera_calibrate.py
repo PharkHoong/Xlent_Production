@@ -824,6 +824,15 @@ class MainWindow(QMainWindow):
         )
 
         if reply == QMessageBox.Yes:
+            # Send C1_CANCEL to server to abort calibration
+            if self.is_connected and self.tcp_socket:
+                try:
+                    self.tcp_socket.sendall("C1_CANCEL".encode('utf-8'))
+                    self.tcp_signals.message_sent.emit("C1_CANCEL")
+                    self.update_tcp_messages("[Calibration] 🛑 Sent 'C1_CANCEL' to abort calibration on server")
+                except socket.error as e:
+                    self.update_tcp_messages(f"Error sending C1_CANCEL: {str(e)}")
+
             self.calibration = CalibrationData()
             self.image_label.clear_points()
             self.calibration_progress.setValue(0)
