@@ -482,7 +482,7 @@ class AnnotationWidget(QWidget):
 
             # Get all images from source folder
             image_files = []
-            for ext in ['.bmp', '.jpg', '.jpeg', '.png', '.tif', '.tiff']:
+            for ext in ['.bmp', '.jpg', '.jpeg', '.png']:
                 image_files.extend([f for f in os.listdir(source_folder)
                                     if f.lower().endswith(ext)])
 

@@ -382,12 +382,12 @@ class MainWindow(QMainWindow):
         # ---------- TCP Connection Settings ----------
         self.tcp_group = QGroupBox("TCP/IP Connection Settings")
 
-        self.host_edit = QLineEdit("192.168.2.41")
+        self.host_edit = QLineEdit("192.168.1.100")
         self.host_edit.setPlaceholderText("Enter host IP address")
 
         self.port_spin = QSpinBox()
         self.port_spin.setRange(1, 65535)
-        self.port_spin.setValue(1220)
+        self.port_spin.setValue(8888)
 
         self.connect_btn = QPushButton("🔌 Connect")
         self.connect_btn.clicked.connect(self.toggle_tcp_connection)
@@ -695,14 +695,14 @@ class MainWindow(QMainWindow):
                 coordinate_found = True
                 break
 
-        # If no stored coordinate found, send C_START
+        # If no stored coordinate found, send C1_START
         if not coordinate_found:
             try:
-                self.tcp_socket.sendall("C_START".encode('utf-8'))
-                self.tcp_signals.message_sent.emit("C_START")
-                self.update_tcp_messages("[Calibration] 🔵 Sent 'C_START' - Waiting for world coordinate...")
+                self.tcp_socket.sendall("C1_START".encode('utf-8'))
+                self.tcp_signals.message_sent.emit("C1_START")
+                self.update_tcp_messages("[Calibration] 🔵 Sent 'C1_START' - Waiting for world coordinate...")
             except socket.error as e:
-                self.update_tcp_messages(f"Error sending C_START: {str(e)}")
+                self.update_tcp_messages(f"Error sending C1_START: {str(e)}")
 
     def add_calibration_point(self, pixel_point, world_point):
         """Add a calibration point pair"""
@@ -864,7 +864,7 @@ class MainWindow(QMainWindow):
                 self.update_tcp_messages(
                     f"[Calibration] Point {point_num}: Pixel ({pixel_point.x()}, {pixel_point.y()}) ↔ World ({world_coords[0]}, {world_coords[1]})")
 
-                # Send C_NEXT for next point if calibration not complete
+                # Send C1_NEXT for next point if calibration not complete
                 if point_num < self.calibration_points_needed:
                     # Check if we already have the next point stored
                     next_point = point_num + 1
@@ -879,15 +879,15 @@ class MainWindow(QMainWindow):
                             next_coord_found = True
                             break
 
-                    # If no stored coordinate found, send C_NEXT
+                    # If no stored coordinate found, send C1_NEXT
                     if not next_coord_found:
                         try:
-                            self.tcp_socket.sendall("C_NEXT".encode('utf-8'))
-                            self.tcp_signals.message_sent.emit("C_NEXT")
+                            self.tcp_socket.sendall("C1_NEXT".encode('utf-8'))
+                            self.tcp_signals.message_sent.emit("C1_NEXT")
                             self.update_tcp_messages(
-                                f"[Calibration] 🔵 Sent 'C_NEXT', waiting for next world coordinate...")
+                                f"[Calibration] 🔵 Sent 'C1_NEXT', waiting for next world coordinate...")
                         except socket.error as e:
-                            self.update_tcp_messages(f"Error sending C_NEXT: {str(e)}")
+                            self.update_tcp_messages(f"Error sending C1_NEXT: {str(e)}")
                 else:
                     self.update_tcp_messages("[Calibration] ✅ All 9 points collected - Performing calibration...")
 
@@ -907,7 +907,7 @@ class MainWindow(QMainWindow):
         """Parse world coordinates from TCP message"""
         try:
             # Parse C_POINT_X_Y format
-            if message.startswith('C_POINT_'):
+            if message.startswith('C1_POINT_'):
                 parts = message.split('_')
                 if len(parts) >= 5:  # C, POINT, index, X, Y
                     point_index = int(parts[2])  # Get the point number (1, 2, 3...)
@@ -1060,9 +1060,9 @@ class MainWindow(QMainWindow):
                     self.is_connected = True
                     self.tcp_signals.connection_status.emit(f"Connected to {host}:{port}", True)
 
-                    # Send C_START after successful connection
-                    self.tcp_socket.sendall("C_START".encode('utf-8'))
-                    self.tcp_signals.message_sent.emit("C_START")
+                    # Send C1_START after successful connection
+                    self.tcp_socket.sendall("C1_START".encode('utf-8'))
+                    self.tcp_signals.message_sent.emit("C1_START")
 
                     # Start listening for messages
                     self.start_listening()

@@ -388,7 +388,7 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Delete"), self, activated=self.delete_selected)
         QShortcut(QKeySequence("Ctrl+T"), self, activated=self.train_model)
         QShortcut(QKeySequence("Ctrl+L"), self, activated=self.load_model)
-        QShortcut(QKeySequence("Ctrl+P"), self, activated=self.predict_current_image)
+        QShortcut(QKeySequence("Ctrl+P"), self, activated=self.predict_current_image_with_filter)
         QShortcut(QKeySequence("Ctrl+A"), self, activated=self.auto_add_label)
         QShortcut(QKeySequence("Ctrl+D"), self, activated=self.auto_tcp_scan)
 
@@ -1544,147 +1544,147 @@ class MainWindow(QMainWindow):
             self.is_predicting = False
 
 
-    def predict_current_image(self):
-        """Run inference on the current image"""
-        if not hasattr(self, 'current_model') or self.current_model is None:
-            QMessageBox.warning(self, "No Model Loaded",
-                                "Please load a trained model first.")
-            return
-
-        if not hasattr(self, 'image_path') or not self.image_path:
-            QMessageBox.warning(self, "No Image",
-                                "Please open an image first.")
-            return
-
-        # Check if class filter is enabled
-        class_filter = None
-        if self.class_filter_checkbox.isChecked():
-            class_filter = self.class_filter_combo.currentData()  # Store class ID as data
-
-        try:
-            self.prediction_progress_dialog = QProgressDialog(
-                "Running inference...", "Cancel", 0, 100, self
-            )
-            self.prediction_progress_dialog.setWindowTitle("Running Prediction")
-            self.prediction_progress_dialog.setWindowModality(Qt.WindowModal)
-            self.prediction_progress_dialog.setMinimumDuration(0)
-            self.prediction_progress_dialog.canceled.connect(self.cancel_prediction)
-
-            self.is_predicting = True
-
-            thread = threading.Thread(
-                target=self.run_prediction,
-                args=(self.image_path,),
-                daemon=True
-            )
-            thread.start()
-
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to start prediction:\n{str(e)}")
-            self.is_predicting = False
-
-    def run_prediction(self, image_path, class_filter=None):
-        """Run prediction on a single image with optional class filter"""
-        try:
-            from ultralytics import YOLO
-            import torch
-
-            self.prediction_signals.progress.emit(10, "Loading model...")
-
-            if not hasattr(self, 'current_model') or self.current_model is None:
-                if hasattr(self, 'current_model_path') and self.current_model_path:
-                    self.current_model = YOLO(self.current_model_path)
-                else:
-                    self.prediction_signals.finished.emit(False, "No model loaded", [])
-                    return
-
-            device = 'cuda' if torch.cuda.is_available() else 'cpu'
-
-            # Filter by class if specified
-            if class_filter is not None:
-                self.prediction_signals.progress.emit(30, f"Detecting class {class_filter} on {device}...")
-            else:
-                self.prediction_signals.progress.emit(30, f"Detecting all classes on {device}...")
-
-            # Add class filter to prediction parameters
-            results = self.current_model.predict(
-                source=image_path,
-                conf=0.25,
-                iou=0.45,
-                device=device,
-                save=False,
-                save_txt=False,
-                save_conf=True,
-                show=False,
-                verbose=False,
-                classes=[class_filter] if class_filter is not None else None  # Add class filter
-            )
-
-            self.prediction_signals.progress.emit(70, "Processing results...")
-
-            predictions = []
-            if results and len(results) > 0:
-                result = results[0]
-
-                if hasattr(result, 'boxes') and result.boxes is not None:
-                    boxes = result.boxes
-
-                    if hasattr(boxes, 'xyxy') and boxes.xyxy is not None:
-                        num_detections = len(boxes.xyxy)
-                    else:
-                        num_detections = 0
-
-                    for i in range(num_detections):
-                        try:
-                            box = boxes.xyxy[i].cpu().numpy()
-                            conf = float(boxes.conf[i].cpu().numpy()) if boxes.conf is not None else 0.0
-                            cls = int(boxes.cls[i].cpu().numpy()) if boxes.cls is not None else 0
-
-                            # Get actual class name from model
-                            actual_class_name = ""
-                            if hasattr(result, 'names') and result.names:
-                                actual_class_name = result.names.get(cls, f"class_{cls}")
-                            else:
-                                actual_class_name = f"class_{cls}"
-
-                            print(f"DEBUG [run_prediction]: Class ID {cls} → '{actual_class_name}'")  # ADD THIS LINE
-
-                            predictions.append({
-                                'bbox': box.tolist(),
-                                'confidence': conf,
-                                'class_id': cls,
-                                'class_name': actual_class_name,  # Use actual name
-                                'class_name_original': actual_class_name  # Add this for clarity
-                            })
-                        except Exception as e:
-                            print(f"Error processing detection {i}: {e}")
-                            continue
-
-            output_dir = os.path.join(os.path.dirname(image_path), "predictions")
-            os.makedirs(output_dir, exist_ok=True)
-
-            output_filename = f"pred_{os.path.basename(image_path)}"
-            output_path = os.path.join(output_dir, output_filename)
-
-            if results and len(results) > 0:
-                result.save(filename=output_path)
-
-            self.prediction_signals.progress.emit(90, "Saving results...")
-
-            self.viewer.display_predictions(predictions)
-
-            self.prediction_signals.progress.emit(100, "Done!")
-            self.prediction_signals.finished.emit(True, f"Found {len(predictions)} objects", predictions)
-            self.prediction_signals.image_ready.emit(output_path)
-
-        except Exception as e:
-            import traceback
-            error_details = traceback.format_exc()
-            error_msg = f"Prediction failed:\n{str(e)}"
-            print(error_details)
-            self.prediction_signals.finished.emit(False, error_msg, [])
-        finally:
-            self.is_predicting = False
+    # def predict_current_image(self):
+    #     """Run inference on the current image"""
+    #     if not hasattr(self, 'current_model') or self.current_model is None:
+    #         QMessageBox.warning(self, "No Model Loaded",
+    #                             "Please load a trained model first.")
+    #         return
+    #
+    #     if not hasattr(self, 'image_path') or not self.image_path:
+    #         QMessageBox.warning(self, "No Image",
+    #                             "Please open an image first.")
+    #         return
+    #
+    #     # Check if class filter is enabled
+    #     class_filter = None
+    #     if self.class_filter_checkbox.isChecked():
+    #         class_filter = self.class_filter_combo.currentData()  # Store class ID as data
+    #
+    #     try:
+    #         self.prediction_progress_dialog = QProgressDialog(
+    #             "Running inference...", "Cancel", 0, 100, self
+    #         )
+    #         self.prediction_progress_dialog.setWindowTitle("Running Prediction")
+    #         self.prediction_progress_dialog.setWindowModality(Qt.WindowModal)
+    #         self.prediction_progress_dialog.setMinimumDuration(0)
+    #         self.prediction_progress_dialog.canceled.connect(self.cancel_prediction)
+    #
+    #         self.is_predicting = True
+    #
+    #         thread = threading.Thread(
+    #             target=self.run_prediction,
+    #             args=(self.image_path,),
+    #             daemon=True
+    #         )
+    #         thread.start()
+    #
+    #     except Exception as e:
+    #         QMessageBox.critical(self, "Error", f"Failed to start prediction:\n{str(e)}")
+    #         self.is_predicting = False
+    #
+    # def run_prediction(self, image_path, class_filter=None):
+    #     """Run prediction on a single image with optional class filter"""
+    #     try:
+    #         from ultralytics import YOLO
+    #         import torch
+    #
+    #         self.prediction_signals.progress.emit(10, "Loading model...")
+    #
+    #         if not hasattr(self, 'current_model') or self.current_model is None:
+    #             if hasattr(self, 'current_model_path') and self.current_model_path:
+    #                 self.current_model = YOLO(self.current_model_path)
+    #             else:
+    #                 self.prediction_signals.finished.emit(False, "No model loaded", [])
+    #                 return
+    #
+    #         device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    #
+    #         # Filter by class if specified
+    #         if class_filter is not None:
+    #             self.prediction_signals.progress.emit(30, f"Detecting class {class_filter} on {device}...")
+    #         else:
+    #             self.prediction_signals.progress.emit(30, f"Detecting all classes on {device}...")
+    #
+    #         # Add class filter to prediction parameters
+    #         results = self.current_model.predict(
+    #             source=image_path,
+    #             conf=0.25,
+    #             iou=0.45,
+    #             device=device,
+    #             save=False,
+    #             save_txt=False,
+    #             save_conf=True,
+    #             show=False,
+    #             verbose=False,
+    #             classes=[class_filter] if class_filter is not None else None  # Add class filter
+    #         )
+    #
+    #         self.prediction_signals.progress.emit(70, "Processing results...")
+    #
+    #         predictions = []
+    #         if results and len(results) > 0:
+    #             result = results[0]
+    #
+    #             if hasattr(result, 'boxes') and result.boxes is not None:
+    #                 boxes = result.boxes
+    #
+    #                 if hasattr(boxes, 'xyxy') and boxes.xyxy is not None:
+    #                     num_detections = len(boxes.xyxy)
+    #                 else:
+    #                     num_detections = 0
+    #
+    #                 for i in range(num_detections):
+    #                     try:
+    #                         box = boxes.xyxy[i].cpu().numpy()
+    #                         conf = float(boxes.conf[i].cpu().numpy()) if boxes.conf is not None else 0.0
+    #                         cls = int(boxes.cls[i].cpu().numpy()) if boxes.cls is not None else 0
+    #
+    #                         # Get actual class name from model
+    #                         actual_class_name = ""
+    #                         if hasattr(result, 'names') and result.names:
+    #                             actual_class_name = result.names.get(cls, f"class_{cls}")
+    #                         else:
+    #                             actual_class_name = f"class_{cls}"
+    #
+    #                         print(f"DEBUG [run_prediction]: Class ID {cls} → '{actual_class_name}'")  # ADD THIS LINE
+    #
+    #                         predictions.append({
+    #                             'bbox': box.tolist(),
+    #                             'confidence': conf,
+    #                             'class_id': cls,
+    #                             'class_name': actual_class_name,  # Use actual name
+    #                             'class_name_original': actual_class_name  # Add this for clarity
+    #                         })
+    #                     except Exception as e:
+    #                         print(f"Error processing detection {i}: {e}")
+    #                         continue
+    #
+    #         output_dir = os.path.join(os.path.dirname(image_path), "predictions")
+    #         os.makedirs(output_dir, exist_ok=True)
+    #
+    #         output_filename = f"pred_{os.path.basename(image_path)}"
+    #         output_path = os.path.join(output_dir, output_filename)
+    #
+    #         if results and len(results) > 0:
+    #             result.save(filename=output_path)
+    #
+    #         self.prediction_signals.progress.emit(90, "Saving results...")
+    #
+    #         self.viewer.display_predictions(predictions)
+    #
+    #         self.prediction_signals.progress.emit(100, "Done!")
+    #         self.prediction_signals.finished.emit(True, f"Found {len(predictions)} objects", predictions)
+    #         self.prediction_signals.image_ready.emit(output_path)
+    #
+    #     except Exception as e:
+    #         import traceback
+    #         error_details = traceback.format_exc()
+    #         error_msg = f"Prediction failed:\n{str(e)}"
+    #         print(error_details)
+    #         self.prediction_signals.finished.emit(False, error_msg, [])
+    #     finally:
+    #         self.is_predicting = False
 
     def on_prediction_progress(self, progress, status):
         """Update prediction progress dialog"""
