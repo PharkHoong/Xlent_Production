@@ -1542,6 +1542,7 @@ class MainWindow(QMainWindow):
             from ultralytics import YOLO
             import torch
             import math
+            import numpy as np
 
             self.prediction_signals.progress.emit(10, "Loading model...")
 
@@ -1583,6 +1584,8 @@ class MainWindow(QMainWindow):
             self.prediction_signals.progress.emit(70, "Processing results...")
 
             predictions = []
+            obb_coordinates_sent = False  # Flag to track if we've sent OBB coordinates
+
             if results and len(results) > 0:
                 result = results[0]
 
@@ -1616,6 +1619,17 @@ class MainWindow(QMainWindow):
                                 'class_name': class_name,
                                 'is_obb': True
                             })
+
+                            # ============= SEND FIRST OBB COORDINATES VIA TCP =============
+                            if not obb_coordinates_sent and i == 0:
+                                # Get the corner coordinates in the required format
+                                # corners is a 4x2 array: [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
+                                corner_list = corners.tolist()
+
+                                # Send via TCP
+                                self.send_obb_coordinates_via_tcp(corner_list)
+                                obb_coordinates_sent = True
+
                         except Exception as e:
                             print(f"Error processing OBB detection {i}: {e}")
                             continue
@@ -1639,6 +1653,20 @@ class MainWindow(QMainWindow):
                                 'class_name': class_name,
                                 'is_obb': False
                             })
+
+                            # For regular boxes, convert to 4 corners if needed
+                            if not obb_coordinates_sent and i == 0:
+                                # Convert regular box to 4 corners
+                                x1, y1, x2, y2 = box
+                                corners = [
+                                    [float(x1), float(y1)],  # top-left
+                                    [float(x2), float(y1)],  # top-right
+                                    [float(x2), float(y2)],  # bottom-right
+                                    [float(x1), float(y2)]  # bottom-left
+                                ]
+                                self.send_obb_coordinates_via_tcp(corners)
+                                obb_coordinates_sent = True
+
                         except Exception as e:
                             print(f"Error processing detection {i}: {e}")
                             continue
@@ -1678,149 +1706,6 @@ class MainWindow(QMainWindow):
             self.prediction_signals.finished.emit(False, error_msg, [])
         finally:
             self.is_predicting = False
-
-
-    # def predict_current_image(self):
-    #     """Run inference on the current image"""
-    #     if not hasattr(self, 'current_model') or self.current_model is None:
-    #         QMessageBox.warning(self, "No Model Loaded",
-    #                             "Please load a trained model first.")
-    #         return
-    #
-    #     if not hasattr(self, 'image_path') or not self.image_path:
-    #         QMessageBox.warning(self, "No Image",
-    #                             "Please open an image first.")
-    #         return
-    #
-    #     # Check if class filter is enabled
-    #     class_filter = None
-    #     if self.class_filter_checkbox.isChecked():
-    #         class_filter = self.class_filter_combo.currentData()  # Store class ID as data
-    #
-    #     try:
-    #         self.prediction_progress_dialog = QProgressDialog(
-    #             "Running inference...", "Cancel", 0, 100, self
-    #         )
-    #         self.prediction_progress_dialog.setWindowTitle("Running Prediction")
-    #         self.prediction_progress_dialog.setWindowModality(Qt.WindowModal)
-    #         self.prediction_progress_dialog.setMinimumDuration(0)
-    #         self.prediction_progress_dialog.canceled.connect(self.cancel_prediction)
-    #
-    #         self.is_predicting = True
-    #
-    #         thread = threading.Thread(
-    #             target=self.run_prediction,
-    #             args=(self.image_path,),
-    #             daemon=True
-    #         )
-    #         thread.start()
-    #
-    #     except Exception as e:
-    #         QMessageBox.critical(self, "Error", f"Failed to start prediction:\n{str(e)}")
-    #         self.is_predicting = False
-    #
-    # def run_prediction(self, image_path, class_filter=None):
-    #     """Run prediction on a single image with optional class filter"""
-    #     try:
-    #         from ultralytics import YOLO
-    #         import torch
-    #
-    #         self.prediction_signals.progress.emit(10, "Loading model...")
-    #
-    #         if not hasattr(self, 'current_model') or self.current_model is None:
-    #             if hasattr(self, 'current_model_path') and self.current_model_path:
-    #                 self.current_model = YOLO(self.current_model_path)
-    #             else:
-    #                 self.prediction_signals.finished.emit(False, "No model loaded", [])
-    #                 return
-    #
-    #         device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    #
-    #         # Filter by class if specified
-    #         if class_filter is not None:
-    #             self.prediction_signals.progress.emit(30, f"Detecting class {class_filter} on {device}...")
-    #         else:
-    #             self.prediction_signals.progress.emit(30, f"Detecting all classes on {device}...")
-    #
-    #         # Add class filter to prediction parameters
-    #         results = self.current_model.predict(
-    #             source=image_path,
-    #             conf=0.25,
-    #             iou=0.45,
-    #             device=device,
-    #             save=False,
-    #             save_txt=False,
-    #             save_conf=True,
-    #             show=False,
-    #             verbose=False,
-    #             classes=[class_filter] if class_filter is not None else None  # Add class filter
-    #         )
-    #
-    #         self.prediction_signals.progress.emit(70, "Processing results...")
-    #
-    #         predictions = []
-    #         if results and len(results) > 0:
-    #             result = results[0]
-    #
-    #             if hasattr(result, 'boxes') and result.boxes is not None:
-    #                 boxes = result.boxes
-    #
-    #                 if hasattr(boxes, 'xyxy') and boxes.xyxy is not None:
-    #                     num_detections = len(boxes.xyxy)
-    #                 else:
-    #                     num_detections = 0
-    #
-    #                 for i in range(num_detections):
-    #                     try:
-    #                         box = boxes.xyxy[i].cpu().numpy()
-    #                         conf = float(boxes.conf[i].cpu().numpy()) if boxes.conf is not None else 0.0
-    #                         cls = int(boxes.cls[i].cpu().numpy()) if boxes.cls is not None else 0
-    #
-    #                         # Get actual class name from model
-    #                         actual_class_name = ""
-    #                         if hasattr(result, 'names') and result.names:
-    #                             actual_class_name = result.names.get(cls, f"class_{cls}")
-    #                         else:
-    #                             actual_class_name = f"class_{cls}"
-    #
-    #                         print(f"DEBUG [run_prediction]: Class ID {cls} → '{actual_class_name}'")  # ADD THIS LINE
-    #
-    #                         predictions.append({
-    #                             'bbox': box.tolist(),
-    #                             'confidence': conf,
-    #                             'class_id': cls,
-    #                             'class_name': actual_class_name,  # Use actual name
-    #                             'class_name_original': actual_class_name  # Add this for clarity
-    #                         })
-    #                     except Exception as e:
-    #                         print(f"Error processing detection {i}: {e}")
-    #                         continue
-    #
-    #         output_dir = os.path.join(os.path.dirname(image_path), "predictions")
-    #         os.makedirs(output_dir, exist_ok=True)
-    #
-    #         output_filename = f"pred_{os.path.basename(image_path)}"
-    #         output_path = os.path.join(output_dir, output_filename)
-    #
-    #         if results and len(results) > 0:
-    #             result.save(filename=output_path)
-    #
-    #         self.prediction_signals.progress.emit(90, "Saving results...")
-    #
-    #         self.viewer.display_predictions(predictions)
-    #
-    #         self.prediction_signals.progress.emit(100, "Done!")
-    #         self.prediction_signals.finished.emit(True, f"Found {len(predictions)} objects", predictions)
-    #         self.prediction_signals.image_ready.emit(output_path)
-    #
-    #     except Exception as e:
-    #         import traceback
-    #         error_details = traceback.format_exc()
-    #         error_msg = f"Prediction failed:\n{str(e)}"
-    #         print(error_details)
-    #         self.prediction_signals.finished.emit(False, error_msg, [])
-    #     finally:
-    #         self.is_predicting = False
 
     def on_prediction_progress(self, progress, status):
         """Update prediction progress dialog"""
@@ -2284,3 +2169,77 @@ class MainWindow(QMainWindow):
             self.disconnect_tcp()
 
         event.accept()
+
+    def send_obb_coordinates_via_tcp(self, corners):
+        """Send OBB corner coordinates to TCP server"""
+        if not corners or len(corners) != 4:
+            print("No valid corners to send")
+            return False
+
+        try:
+            # Format the coordinates as -22.35_2.49,22.74_2.15,23.02_-3.06,-22.97_-2.91
+            coord_string = ""
+            for i, point in enumerate(corners):
+                x = point[0]  # x coordinate
+                y = point[1]  # y coordinate
+                coord_string += f"{x:.2f}_{y:.2f}"
+                if i < 3:
+                    coord_string += ","
+
+            # Create TCP socket
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(5)  # 5 second timeout
+
+            # Connect to server
+            server_ip = "192.168.1.100"
+            server_port = 8888
+
+            self.status_label.setText(f"Connecting to {server_ip}:{server_port}...")
+            self.update_tcp_messages(f"[TCP] Connecting to {server_ip}:{server_port}...")
+
+            sock.connect((server_ip, server_port))
+
+            # Send the coordinates
+            sock.sendall(coord_string.encode('utf-8'))
+
+            # Optional: Wait for acknowledgment
+            try:
+                response = sock.recv(1024)
+                if response:
+                    self.update_tcp_messages(f"[TCP] Server response: {response.decode('utf-8').strip()}")
+            except socket.timeout:
+                pass
+
+            sock.close()
+
+            # Update UI
+            self.status_label.setText(f"Coordinates sent: {coord_string}")
+            self.update_tcp_messages(f"[TCP] ✅ Sent: {coord_string}")
+
+            # Show success notification
+            self.show_tcp_success_notification(coord_string)
+
+            return True
+
+        except socket.error as e:
+            error_msg = f"TCP connection failed: {str(e)}"
+            self.status_label.setText(error_msg)
+            self.update_tcp_messages(f"[TCP] ❌ {error_msg}")
+            QMessageBox.warning(self, "TCP Error", error_msg)
+            return False
+        except Exception as e:
+            error_msg = f"Error sending coordinates: {str(e)}"
+            self.status_label.setText(error_msg)
+            self.update_tcp_messages(f"[TCP] ❌ {error_msg}")
+            return False
+
+    def show_tcp_success_notification(self, coord_string):
+        """Show a brief notification about TCP send"""
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("TCP Coordinates Sent")
+        msg_box.setText(f"✅ Coordinates sent to 192.168.1.100:8888\n\n{coord_string}")
+        msg_box.setIcon(QMessageBox.Information)
+
+        # Auto-close after 3 seconds
+        QTimer.singleShot(3000, msg_box.close)
+        msg_box.show()
