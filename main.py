@@ -185,6 +185,22 @@ class MainWindow(QMainWindow):
         self.labeling_btn.setStyleSheet("background-color: #795548; color: white; font-weight: bold;")
         self.labeling_btn.setToolTip("Auto connect TCP and send bounding box coordinates")
 
+        # Add OBB toggle button to top bar
+        self.obb_mode_btn = QPushButton("OBB Mode OFF")
+        self.obb_mode_btn.setCheckable(True)
+        self.obb_mode_btn.clicked.connect(self.toggle_obb_mode)
+        self.obb_mode_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #9C27B0;
+                color: white;
+                font-weight: bold;
+                padding: 5px;
+            }
+            QPushButton:checked {
+                background-color: #FF9800;
+            }
+        """)
+
         top_bar.addWidget(open_folder_btn)
         top_bar.addWidget(self.capture_btn)
         top_bar.addWidget(self.capture2_btn)
@@ -195,6 +211,7 @@ class MainWindow(QMainWindow):
         top_bar.addWidget(self.train_model_btn)
         top_bar.addWidget(load_model_btn)
         top_bar.addWidget(self.labeling_btn)
+        top_bar.addWidget(self.obb_mode_btn)  # Add OBB button after other buttons
         top_bar.addStretch()
 
         # ---------- Labels Section ----------
@@ -204,7 +221,7 @@ class MainWindow(QMainWindow):
         self.add_label_btn = QPushButton("+")
         self.add_label_btn.setFixedWidth(40)
         self.add_label_btn.clicked.connect(self.auto_add_label)
-        self.add_label_btn.setToolTip("Add new label (1, 2, 3, ...)")  # Updated tooltip
+        self.add_label_btn.setToolTip("Add new label (1, 2, 3, ...)")
 
         label_bar = QHBoxLayout()
         label_bar.addWidget(self.label_combo)
@@ -218,11 +235,15 @@ class MainWindow(QMainWindow):
         # ---------- Left Column: Annotation Viewer (70%) ----------
         left_column = QVBoxLayout()
 
-        # Annotation widget
+        # FIX: Create AnnotationWidget FIRST before connecting signals
         self.viewer = AnnotationWidget(
             self.get_current_label,
             self.get_label_color
         )
+
+        # FIX: Connect signals AFTER creating the viewer
+        self.viewer.status_message.connect(self.on_annotation_status)
+
         left_column.addWidget(self.viewer, 1)
 
         # Image info label
@@ -409,6 +430,45 @@ class MainWindow(QMainWindow):
 
         # Add this to your main layout somewhere
         layout.addLayout(filter_layout)
+
+    def on_annotation_status(self, message):
+        """Handle status messages from annotation widget"""
+        self.status_label.setText(message)
+        # Also update TCP messages display if needed
+        if "OBB" in message or "corner" in message:
+            timestamp = time.strftime("%H:%M:%S")
+            self.update_tcp_messages(f"[{timestamp}] 🎯 {message}")
+
+    def toggle_obb_mode(self, checked):
+        """Toggle Oriented Bounding Box mode"""
+        # Call the viewer's toggle_obb_mode method
+        self.viewer.toggle_obb_mode(checked)
+
+        # Set/remove OBB mode flag file
+        self.viewer.set_obb_mode_flag(self.labeling_path, checked)
+
+        if checked:
+            self.obb_mode_btn.setText("OBB Mode ON")
+            self.obb_mode_btn.setStyleSheet("""
+                QPushButton:checked {
+                    background-color: #FF9800;
+                    color: white;
+                    font-weight: bold;
+                    padding: 5px;
+                }
+            """)
+            self.status_label.setText("OBB Mode: Click 4 corners to define rotated box")
+        else:
+            self.obb_mode_btn.setText("OBB Mode OFF")
+            self.obb_mode_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #9C27B0;
+                    color: white;
+                    font-weight: bold;
+                    padding: 5px;
+                }
+            """)
+            self.status_label.setText("Ready")
 
     def create_required_folders(self):
         """Create all required folders if they don't exist"""
@@ -945,6 +1005,46 @@ class MainWindow(QMainWindow):
                 gpu_info = "CPU"
             gpu_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
 
+            # Check if this is OBB dataset
+            is_obb = False
+            try:
+                import yaml
+                with open(yaml_path, 'r') as f:
+                    data = yaml.safe_load(f)
+                    # OBB datasets have task='obb'
+                    is_obb = data.get('task') == 'obb'
+            except:
+                pass
+
+            # Use appropriate model for OBB
+            if is_obb:
+                # Determine model size from model_name
+                original_model_name = model_name
+
+                if "nano" in original_model_name or "n" in original_model_name:
+                    model_size_key = "nano (yolo11n)"
+                elif "small" in original_model_name or "s" in original_model_name:
+                    model_size_key = "small (yolo11s)"
+                elif "medium" in original_model_name or "m" in original_model_name:
+                    model_size_key = "medium (yolo11m)"
+                elif "large" in original_model_name or "l" in original_model_name:
+                    model_size_key = "large (yolo11l)"
+                elif "xlarge" in original_model_name or "x" in original_model_name:
+                    model_size_key = "xlarge (yolo11x)"
+                else:
+                    model_size_key = "nano (yolo11n)"
+
+                obb_model_map = {
+                    "nano (yolo11n)": "yolo11n-obb.pt",
+                    "small (yolo11s)": "yolo11s-obb.pt",
+                    "medium (yolo11m)": "yolo11m-obb.pt",
+                    "large (yolo11l)": "yolo11l-obb.pt",
+                    "xlarge (yolo11x)": "yolo11x-obb.pt"
+                }
+                model_name = obb_model_map.get(model_size_key, "yolo11n-obb.pt")
+
+            model = YOLO(model_name)
+
             # Update progress - Initialization
             self.training_signals.progress.emit(0, f"Initializing training on {device}...", "Starting...")
 
@@ -1437,10 +1537,11 @@ class MainWindow(QMainWindow):
             self.is_predicting = False
 
     def run_prediction_with_filter(self, image_path, class_filter):
-        """Run prediction with class filter"""
+        """Run prediction with class filter - supports both regular and OBB"""
         try:
             from ultralytics import YOLO
             import torch
+            import math
 
             self.prediction_signals.progress.emit(10, "Loading model...")
 
@@ -1462,7 +1563,10 @@ class MainWindow(QMainWindow):
             else:
                 self.prediction_signals.progress.emit(30, f"Detecting all classes on {device}...")
 
-            # Run prediction with class filter
+            # Check if model is OBB
+            is_obb = hasattr(self.current_model, 'task') and self.current_model.task == 'obb'
+
+            # Run prediction
             results = self.current_model.predict(
                 source=image_path,
                 conf=0.25,
@@ -1473,7 +1577,7 @@ class MainWindow(QMainWindow):
                 save_conf=True,
                 show=False,
                 verbose=False,
-                classes=[class_filter] if class_filter is not None else None  # This filters by class
+                classes=[class_filter] if class_filter is not None else None
             )
 
             self.prediction_signals.progress.emit(70, "Processing results...")
@@ -1482,15 +1586,44 @@ class MainWindow(QMainWindow):
             if results and len(results) > 0:
                 result = results[0]
 
-                if hasattr(result, 'boxes') and result.boxes is not None:
+                # Handle OBB results
+                if is_obb and hasattr(result, 'obb') and result.obb is not None:
+                    # Process OBB detections
+                    obb = result.obb
+                    for i in range(len(obb.xyxyxyxy)):
+                        try:
+                            # Get 4 corner points
+                            corners = obb.xyxyxyxy[i].cpu().numpy()
+                            conf = float(obb.conf[i].cpu().numpy()) if obb.conf is not None else 0.0
+                            cls = int(obb.cls[i].cpu().numpy()) if obb.cls is not None else 0
+                            class_name = f"class_{cls}"
+                            if hasattr(result, 'names') and result.names:
+                                class_name = result.names.get(cls, f"class_{cls}")
+
+                            # Convert corners to bbox format (x1, y1, x2, y2) for display
+                            x_coords = corners[:, 0]
+                            y_coords = corners[:, 1]
+                            x1 = float(np.min(x_coords))
+                            y1 = float(np.min(y_coords))
+                            x2 = float(np.max(x_coords))
+                            y2 = float(np.max(y_coords))
+
+                            predictions.append({
+                                'bbox': [x1, y1, x2, y2],
+                                'corners': corners.tolist(),  # Store corners for OBB
+                                'confidence': conf,
+                                'class_id': cls,
+                                'class_name': class_name,
+                                'is_obb': True
+                            })
+                        except Exception as e:
+                            print(f"Error processing OBB detection {i}: {e}")
+                            continue
+
+                # Handle regular box results
+                elif hasattr(result, 'boxes') and result.boxes is not None:
                     boxes = result.boxes
-
-                    if hasattr(boxes, 'xyxy') and boxes.xyxy is not None:
-                        num_detections = len(boxes.xyxy)
-                    else:
-                        num_detections = 0
-
-                    for i in range(num_detections):
+                    for i in range(len(boxes.xyxy)):
                         try:
                             box = boxes.xyxy[i].cpu().numpy()
                             conf = float(boxes.conf[i].cpu().numpy()) if boxes.conf is not None else 0.0
@@ -1503,12 +1636,14 @@ class MainWindow(QMainWindow):
                                 'bbox': box.tolist(),
                                 'confidence': conf,
                                 'class_id': cls,
-                                'class_name': class_name
+                                'class_name': class_name,
+                                'is_obb': False
                             })
                         except Exception as e:
                             print(f"Error processing detection {i}: {e}")
                             continue
 
+            # Save results
             output_dir = os.path.join(os.path.dirname(image_path), "predictions")
             os.makedirs(output_dir, exist_ok=True)
 
@@ -1520,6 +1655,7 @@ class MainWindow(QMainWindow):
 
             self.prediction_signals.progress.emit(90, "Saving results...")
 
+            # Display predictions in viewer
             self.viewer.display_predictions(predictions)
 
             # Show summary message
