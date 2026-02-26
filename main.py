@@ -128,16 +128,6 @@ class MainWindow(QMainWindow):
         self.calibration_status = QLabel("No calibration loaded")
         self.calibration_status.setStyleSheet("color: #666; font-style: italic;")
 
-        self.save_calibration_btn = QPushButton("💾 Save Calibration")
-        self.save_calibration_btn.clicked.connect(self.save_calibration)
-        self.save_calibration_btn.setEnabled(False)
-        self.save_calibration_btn.setStyleSheet("background-color: #4CAF50; color: white;")
-
-        # Create the load button
-        self.load_calibration_btn = QPushButton("📂 Load Calibration")
-        self.load_calibration_btn.clicked.connect(self.load_calibration)
-        self.load_calibration_btn.setStyleSheet("background-color: #2196F3; color: white;")
-
         self.is_training = False
         self.is_predicting = False
         self.training_start_time = None
@@ -237,11 +227,6 @@ class MainWindow(QMainWindow):
         top_bar.addWidget(load_model_btn)
         top_bar.addWidget(self.labeling_btn)
         top_bar.addWidget(self.obb_mode_btn)
-
-        # ADD THE CALIBRATION BUTTONS HERE:
-        top_bar.addWidget(self.load_calibration_btn)
-        top_bar.addWidget(self.save_calibration_btn)
-
         top_bar.addStretch()
         # --- END OF CALIBRATION BUTTON ADDITION ---
 
@@ -1892,148 +1877,6 @@ class MainWindow(QMainWindow):
         finally:
             self.is_predicting = False
 
-    # def predict_current_image(self):
-    #     """Run inference on the current image"""
-    #     if not hasattr(self, 'current_model') or self.current_model is None:
-    #         QMessageBox.warning(self, "No Model Loaded",
-    #                             "Please load a trained model first.")
-    #         return
-    #
-    #     if not hasattr(self, 'image_path') or not self.image_path:
-    #         QMessageBox.warning(self, "No Image",
-    #                             "Please open an image first.")
-    #         return
-    #
-    #     # Check if class filter is enabled
-    #     class_filter = None
-    #     if self.class_filter_checkbox.isChecked():
-    #         class_filter = self.class_filter_combo.currentData()  # Store class ID as data
-    #
-    #     try:
-    #         self.prediction_progress_dialog = QProgressDialog(
-    #             "Running inference...", "Cancel", 0, 100, self
-    #         )
-    #         self.prediction_progress_dialog.setWindowTitle("Running Prediction")
-    #         self.prediction_progress_dialog.setWindowModality(Qt.WindowModal)
-    #         self.prediction_progress_dialog.setMinimumDuration(0)
-    #         self.prediction_progress_dialog.canceled.connect(self.cancel_prediction)
-    #
-    #         self.is_predicting = True
-    #
-    #         thread = threading.Thread(
-    #             target=self.run_prediction,
-    #             args=(self.image_path,),
-    #             daemon=True
-    #         )
-    #         thread.start()
-    #
-    #     except Exception as e:
-    #         QMessageBox.critical(self, "Error", f"Failed to start prediction:\n{str(e)}")
-    #         self.is_predicting = False
-    #
-    # def run_prediction(self, image_path, class_filter=None):
-    #     """Run prediction on a single image with optional class filter"""
-    #     try:
-    #         from ultralytics import YOLO
-    #         import torch
-    #
-    #         self.prediction_signals.progress.emit(10, "Loading model...")
-    #
-    #         if not hasattr(self, 'current_model') or self.current_model is None:
-    #             if hasattr(self, 'current_model_path') and self.current_model_path:
-    #                 self.current_model = YOLO(self.current_model_path)
-    #             else:
-    #                 self.prediction_signals.finished.emit(False, "No model loaded", [])
-    #                 return
-    #
-    #         device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    #
-    #         # Filter by class if specified
-    #         if class_filter is not None:
-    #             self.prediction_signals.progress.emit(30, f"Detecting class {class_filter} on {device}...")
-    #         else:
-    #             self.prediction_signals.progress.emit(30, f"Detecting all classes on {device}...")
-    #
-    #         # Add class filter to prediction parameters
-    #         results = self.current_model.predict(
-    #             source=image_path,
-    #             conf=0.25,
-    #             iou=0.45,
-    #             device=device,
-    #             save=False,
-    #             save_txt=False,
-    #             save_conf=True,
-    #             show=False,
-    #             verbose=False,
-    #             classes=[class_filter] if class_filter is not None else None  # Add class filter
-    #         )
-    #
-    #         self.prediction_signals.progress.emit(70, "Processing results...")
-    #
-    #         predictions = []
-    #         if results and len(results) > 0:
-    #             result = results[0]
-    #
-    #             if hasattr(result, 'boxes') and result.boxes is not None:
-    #                 boxes = result.boxes
-    #
-    #                 if hasattr(boxes, 'xyxy') and boxes.xyxy is not None:
-    #                     num_detections = len(boxes.xyxy)
-    #                 else:
-    #                     num_detections = 0
-    #
-    #                 for i in range(num_detections):
-    #                     try:
-    #                         box = boxes.xyxy[i].cpu().numpy()
-    #                         conf = float(boxes.conf[i].cpu().numpy()) if boxes.conf is not None else 0.0
-    #                         cls = int(boxes.cls[i].cpu().numpy()) if boxes.cls is not None else 0
-    #
-    #                         # Get actual class name from model
-    #                         actual_class_name = ""
-    #                         if hasattr(result, 'names') and result.names:
-    #                             actual_class_name = result.names.get(cls, f"class_{cls}")
-    #                         else:
-    #                             actual_class_name = f"class_{cls}"
-    #
-    #                         print(f"DEBUG [run_prediction]: Class ID {cls} → '{actual_class_name}'")  # ADD THIS LINE
-    #
-    #                         predictions.append({
-    #                             'bbox': box.tolist(),
-    #                             'confidence': conf,
-    #                             'class_id': cls,
-    #                             'class_name': actual_class_name,  # Use actual name
-    #                             'class_name_original': actual_class_name  # Add this for clarity
-    #                         })
-    #                     except Exception as e:
-    #                         print(f"Error processing detection {i}: {e}")
-    #                         continue
-    #
-    #         output_dir = os.path.join(os.path.dirname(image_path), "predictions")
-    #         os.makedirs(output_dir, exist_ok=True)
-    #
-    #         output_filename = f"pred_{os.path.basename(image_path)}"
-    #         output_path = os.path.join(output_dir, output_filename)
-    #
-    #         if results and len(results) > 0:
-    #             result.save(filename=output_path)
-    #
-    #         self.prediction_signals.progress.emit(90, "Saving results...")
-    #
-    #         self.viewer.display_predictions(predictions)
-    #
-    #         self.prediction_signals.progress.emit(100, "Done!")
-    #         self.prediction_signals.finished.emit(True, f"Found {len(predictions)} objects", predictions)
-    #         self.prediction_signals.image_ready.emit(output_path)
-    #
-    #     except Exception as e:
-    #         import traceback
-    #         error_details = traceback.format_exc()
-    #         error_msg = f"Prediction failed:\n{str(e)}"
-    #         print(error_details)
-    #         self.prediction_signals.finished.emit(False, error_msg, [])
-    #     finally:
-    #         self.is_predicting = False
-
     def on_prediction_progress(self, progress, status):
         """Update prediction progress dialog"""
         dialog = self.prediction_progress_dialog
@@ -2091,25 +1934,6 @@ class MainWindow(QMainWindow):
 
                 dialog.setLayout(layout)
 
-                # if dialog.exec() == QDialog.Accepted:
-                #     if radio_yolo.isChecked():
-                #         format_type = "yolo"
-                #     elif radio_pixel.isChecked():
-                #         format_type = "pixel"
-                #     elif radio_both.isChecked():
-                #         format_type = "both"
-                #
-                #     self.viewer.save_predictions_as_annotations(self.image_path, predictions, format_type)
-                #
-                #     format_names = {
-                #         "yolo": "YOLO format (.txt)",
-                #         "pixel": "Pixel coordinates (.txt)",
-                #         "both": "Both formats"
-                #     }
-                #
-                #     QMessageBox.information(self, "Saved",
-                #                             f"Predictions saved in {format_names[format_type]} format\n"
-                #                             f"Saved to: labels/ folder")
             else:
                 QMessageBox.information(self, "Prediction Complete",
                                         "No objects detected in the image.")
@@ -2175,7 +1999,7 @@ class MainWindow(QMainWindow):
         thread.start()
 
     def capture_predict(self):
-        """Second camera capture - also runs auto-prediction"""
+        """Second camera capture - also runs auto-prediction with calibration"""
         # 🚨 Check model FIRST
         if not hasattr(self, 'current_model') or self.current_model is None:
             QMessageBox.warning(
@@ -2187,6 +2011,57 @@ class MainWindow(QMainWindow):
             return
 
         self.save_current()
+
+        # Ask user to select calibration file
+        calibration_file, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Calibration File (Optional - Cancel to skip)",
+            self.base_path,  # Start in base path
+            "JSON Files (*.json);;All Files (*.*)"
+        )
+
+        # If user selected a calibration file, load it
+        if calibration_file:
+            success, message = self.calibration.load_calibration(calibration_file)
+            if success:
+                # Update UI to show calibration is loaded
+                if hasattr(self, 'calibration_status'):
+                    self.calibration_status.setText(f"Calibration loaded - {len(self.calibration.pixel_points)} points")
+                    self.calibration_status.setStyleSheet("color: #4CAF50; font-weight: bold;")
+
+                # Update TCP messages
+                self.update_tcp_messages(f"[Calibration] ✅ Loaded: {os.path.basename(calibration_file)}")
+                self.update_tcp_messages(f"[Calibration] 📊 Points: {len(self.calibration.pixel_points)}")
+
+                # Show confirmation
+                QMessageBox.information(
+                    self,
+                    "Calibration Loaded",
+                    f"✅ Calibration loaded successfully!\n\n"
+                    f"📁 File: {os.path.basename(calibration_file)}\n"
+                    f"📊 Number of points: {len(self.calibration.pixel_points)}\n"
+                    f"📍 Calibration status: Active"
+                )
+            else:
+                # If calibration loading failed, show warning but continue
+                QMessageBox.warning(
+                    self,
+                    "Calibration Failed",
+                    f"⚠️ Failed to load calibration file:\n{message}\n\n"
+                    f"Proceeding without calibration. World coordinates will not be available."
+                )
+                # Reset calibration
+                self.calibration = Calibration()
+        else:
+            # User skipped calibration
+            self.update_tcp_messages("[Calibration] ⚠️ No calibration file selected - Using pixel coordinates only")
+            QMessageBox.information(
+                self,
+                "No Calibration",
+                "Proceeding without calibration.\n\nWorld coordinates will not be available."
+            )
+            # Reset to ensure clean state
+            self.calibration = Calibration()
 
         # Ask which class to detect
         from PySide6.QtWidgets import QDialog, QVBoxLayout, QRadioButton, QPushButton, QButtonGroup
@@ -2201,6 +2076,11 @@ class MainWindow(QMainWindow):
         class_names = {}
         if hasattr(self.current_model, 'names'):
             class_names = self.current_model.names
+
+        # Add calibration status to dialog
+        cal_status = "✅ Active" if self.calibration.is_calibrated else "❌ Inactive"
+        layout.addWidget(QLabel(f"📐 Calibration Status: {cal_status}"))
+        layout.addWidget(QLabel(" "))  # Spacer
 
         layout.addWidget(QLabel("Select detection mode:"))
 
@@ -2247,6 +2127,7 @@ class MainWindow(QMainWindow):
                     break
 
         print(f"DEBUG: Will detect class: {self.selected_class_for_prediction}")
+        print(f"DEBUG: Calibration active: {self.calibration.is_calibrated}")
 
         # Use the SAME path for both cameras
         self.capture_folder_2 = self.capture_image_prediction_path
@@ -2515,9 +2396,6 @@ class MainWindow(QMainWindow):
                 if hasattr(self, 'calibration_status'):
                     self.calibration_status.setText(f"Calibration loaded - {len(self.calibration.pixel_points)} points")
 
-                if hasattr(self, 'save_calibration_btn'):
-                    self.save_calibration_btn.setEnabled(True)
-
                 # Clear and re-add points to image (assuming viewer has these methods)
                 if hasattr(self.viewer, 'clear_calibration_points'):
                     self.viewer.clear_calibration_points()
@@ -2533,43 +2411,6 @@ class MainWindow(QMainWindow):
             else:
                 QMessageBox.warning(self, "Load Failed", message)
 
-    def save_calibration(self):
-        """Save calibration to file"""
-        if not hasattr(self.viewer, 'calibration_points') or not self.viewer.calibration_points:
-            QMessageBox.warning(self, "No Calibration Points",
-                                "No calibration points to save.")
-            return
-
-        filepath, _ = QFileDialog.getSaveFileName(
-            self, "Save Calibration File",
-            "", "JSON Files (*.json)"
-        )
-
-        if filepath:
-            try:
-                # Collect points from viewer
-                pixel_points = []
-                world_points = []
-
-                for point in self.viewer.calibration_points:
-                    pixel_points.append([point.pixel_x, point.pixel_y])
-                    world_points.append([point.world_x, point.world_y])
-
-                data = {
-                    'pixel_points': pixel_points,
-                    'world_points': world_points,
-                    'timestamp': datetime.now().isoformat()
-                }
-
-                with open(filepath, 'w') as f:
-                    json.dump(data, f, indent=2)
-
-                self.update_tcp_messages(f"[Calibration] 💾 Saved: {filepath}")
-                QMessageBox.information(self, "Calibration Saved",
-                                        f"Saved {len(pixel_points)} calibration points")
-
-            except Exception as e:
-                QMessageBox.critical(self, "Save Failed", f"Error saving calibration: {str(e)}")
 class Calibration:
     """Handles camera calibration data and transformations"""
 
@@ -2623,28 +2464,6 @@ class Calibration:
             print(f"Conversion error: {e}")
             return None
 
-    def save_calibration(self, filepath):
-        """Save calibration data to JSON file"""
-        if not self.is_calibrated:
-            return False, "Not calibrated"
-
-        try:
-            calibration_data = {
-                'calibration_matrix': self.calibration_matrix.tolist(),
-                'pixel_points': self.pixel_points,
-                'world_points': self.world_points,
-                'timestamp': time.strftime("%Y-%m-%d %H:%M:%S")
-            }
-
-            with open(filepath, 'w') as f:
-                json.dump(calibration_data, f, indent=2)
-
-            self.calibration_file = filepath
-            return True, f"Calibration saved to {filepath}"
-
-        except Exception as e:
-            return False, f"Failed to save calibration: {str(e)}"
-
     def load_calibration(self, filepath):
         """Load calibration data from JSON file"""
         try:
@@ -2669,4 +2488,3 @@ class Calibration:
             'num_points': len(self.pixel_points),
             'calibration_file': self.calibration_file
         }
-

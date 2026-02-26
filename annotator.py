@@ -153,27 +153,6 @@ class AnnotationWidget(QWidget):
             if lines:
                 f.write("\n".join(lines))
 
-
-    # def check_training_ready(self, folder_path):
-    #     """Check if dataset is ready for training"""
-    #     yaml_path = os.path.join(folder_path, "data.yaml")
-    #     if not os.path.exists(yaml_path):
-    #         return False, "data.yaml not found"
-    #
-    #     # Check if train/val folders exist and have files
-    #     images_train_dir = os.path.join(folder_path, "images", "train")
-    #     images_val_dir = os.path.join(folder_path, "images", "val")
-    #
-    #     if not os.path.exists(images_train_dir) or not os.path.exists(images_val_dir):
-    #         return False, "Train/val folders not found"
-    #
-    #     # Check if there are images in train folder
-    #     train_images = [f for f in os.listdir(images_train_dir) if f.lower().endswith('.bmp')]
-    #     if len(train_images) == 0:
-    #         return False, "No training images found"
-    #
-    #     return True, f"Ready for training: {len(train_images)} training images"
-
     # ---------------- Image handling ----------------
     def load_image(self, path):
         if not path.lower().endswith(".bmp"):
@@ -1705,103 +1684,6 @@ You may need to move files to the appropriate train/val folders.
             import traceback
             traceback.print_exc()
 
-    ##get annotation output
-    # def save_predictions_as_annotations(self, image_path, predictions, format_type="yolo"):
-    #     """
-    #     Save predictions as annotations in specified format
-    #
-    #     Args:
-    #         image_path: Path to the image file
-    #         predictions: List of prediction dictionaries
-    #         format_type: "yolo" or "pixel" or "both"
-    #     """
-    #     if not self.pixmap or not image_path:
-    #         return
-    #
-    #     image_width = self.pixmap.width()
-    #     image_height = self.pixmap.height()
-    #
-    #     # Create labels directory if it doesn't exist
-    #     labels_dir = os.path.join(os.path.dirname(image_path), "labels")
-    #     os.makedirs(labels_dir, exist_ok=True)
-    #
-    #     # Get base filename
-    #     base_name = os.path.splitext(os.path.basename(image_path))[0]
-    #
-    #     if format_type in ["yolo", "both"]:
-    #         # Save YOLO format
-    #         yolo_path = os.path.join(labels_dir, base_name + ".txt")
-    #         self._save_yolo_predictions(yolo_path, predictions, image_width, image_height)
-    #
-    #     if format_type in ["pixel", "both"]:
-    #         # Save pixel coordinates format
-    #         pixel_path = os.path.join(labels_dir, base_name + "_pixel.txt")
-    #         self._save_pixel_predictions(pixel_path, predictions)
-    #
-    #     print(f"✓ Saved predictions as annotations in {format_type} format")
-
-    # def _save_yolo_predictions(self, filepath, predictions, image_width, image_height):
-    #     """Save predictions in YOLO format (normalized)"""
-    #     lines = []
-    #     for pred in predictions:
-    #         bbox = pred['bbox']  # [x1, y1, x2, y2]
-    #         class_id = pred['class_id']
-    #
-    #         # Convert to YOLO format (x_center, y_center, width, height, normalized)
-    #         x_center = ((bbox[0] + bbox[2]) / 2) / image_width
-    #         y_center = ((bbox[1] + bbox[3]) / 2) / image_height
-    #         width = (bbox[2] - bbox[0]) / image_width
-    #         height = (bbox[3] - bbox[1]) / image_height
-    #
-    #         # Ensure values are within [0, 1] range
-    #         x_center = max(0, min(1, x_center))
-    #         y_center = max(0, min(1, y_center))
-    #         width = max(0, min(1, width))
-    #         height = max(0, min(1, height))
-    #
-    #         # Format: class_id x_center y_center width height
-    #         line = f"{class_id} {x_center:.6f} {y_center:.6f} {width:.6f} {height:.6f}"
-    #         lines.append(line)
-    #
-    #     # Write to file
-    #     with open(filepath, "w", encoding="utf-8") as f:
-    #         if lines:
-    #             f.write("\n".join(lines))
-    #
-    #     print(f"  - YOLO format saved to: {os.path.basename(filepath)}")
-    #
-    #     # Also print first few lines for verification
-    #     if lines:
-    #         print("  Sample YOLO format:")
-    #         for i, line in enumerate(lines[:3]):
-    #             print(f"    Box {i}: {line}")
-
-    # def _save_pixel_predictions(self, filepath, predictions):
-    #     """Save predictions in pixel coordinates format"""
-    #     lines = []
-    #     for pred in predictions:
-    #         bbox = pred['bbox']  # [x1, y1, x2, y2]
-    #         class_id = pred['class_id']
-    #         class_name = pred.get('class_name', f'class_{class_id}')
-    #         confidence = pred['confidence']
-    #
-    #         # Format: class_id class_name confidence x1 y1 x2 y2
-    #         line = f"{class_id} {class_name} {confidence:.4f} {bbox[0]:.1f} {bbox[1]:.1f} {bbox[2]:.1f} {bbox[3]:.1f}"
-    #         lines.append(line)
-    #
-    #     # Write to file
-    #     with open(filepath, "w", encoding="utf-8") as f:
-    #         f.write("# Format: class_id class_name confidence x1 y1 x2 y2\n")
-    #         if lines:
-    #             f.write("\n".join(lines))
-    #
-    #     print(f"  - Pixel format saved to: {os.path.basename(filepath)}")
-    #
-    #     # Also print first few lines for verification
-    #     if lines:
-    #         print("  Sample pixel format:")
-    #         for i, line in enumerate(lines[:3]):
-    #             print(f"    Box {i}: {line}")
     def clear_calibration_points(self):
         """Clear all calibration points"""
         if hasattr(self, 'calibration_points'):
@@ -1812,14 +1694,3 @@ You may need to move files to the appropriate train/val folders.
         """Add a calibration point"""
         if not hasattr(self, 'calibration_points'):
             self.calibration_points = []
-
-        # Create a simple point object
-        class CalibrationPoint:
-            def __init__(self, px, py, wx, wy):
-                self.pixel_x = px
-                self.pixel_y = py
-                self.world_x = wx
-                self.world_y = wy
-
-        self.calibration_points.append(CalibrationPoint(pixel_x, pixel_y, world_x, world_y))
-        self.update()
