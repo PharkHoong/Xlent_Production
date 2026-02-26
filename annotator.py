@@ -1694,3 +1694,41 @@ You may need to move files to the appropriate train/val folders.
         """Add a calibration point"""
         if not hasattr(self, 'calibration_points'):
             self.calibration_points = []
+
+    #for assembly laser remove UI color
+    def reset_selection(self):
+        """Reset all selection and interaction states and clear all boxes data and UI"""
+        # Clear all boxes data
+        self.boxes.clear()
+
+        # Reset selection states
+        self.selected_index = -1
+        self.dragging = False
+        self.resizing = False
+        self.resize_handle = None
+        self.obb_corner_dragging = -1
+        self.obb_selected_index = -1
+
+        # Reset drawing states
+        self.drawing = False
+        self.start_point = None
+        self.current_rect = None
+
+        # Reset OBB drawing states if they exist
+        if hasattr(self, 'obb_corners'):
+            self.obb_corners = []
+        if hasattr(self, 'obb_drawing'):
+            self.obb_drawing = False
+
+        # Clear any temporary or cached data
+        if hasattr(self, 'temp_box'):
+            self.temp_box = None
+        if hasattr(self, 'hover_index'):
+            self.hover_index = -1
+
+        # Force complete redraw of the widget
+        self.update()
+
+        # Optional: Emit a signal that boxes have been cleared
+        # if hasattr(self, 'boxes_cleared'):
+        #     self.boxes_cleared.emit()
