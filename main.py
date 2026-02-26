@@ -3,6 +3,9 @@ import random
 import threading
 import socket
 import time
+import json
+import numpy as np
+import cv2
 from datetime import datetime, timedelta
 from PIL import Image
 from PySide6.QtWidgets import (
@@ -11,7 +14,7 @@ from PySide6.QtWidgets import (
     QComboBox, QPushButton, QInputDialog,
     QMessageBox, QProgressDialog, QLabel,
     QLineEdit, QSpinBox, QStackedWidget,
-    QGroupBox, QScrollArea, QTextEdit, QCheckBox
+    QGroupBox, QScrollArea, QTextEdit, QCheckBox, QProgressBar
 )
 from PySide6.QtGui import QKeySequence, QShortcut, QColor, QPixmap, QTextCursor
 from PySide6.QtCore import Signal, QObject, QTimer, Qt, QRectF, QPointF
@@ -114,6 +117,27 @@ class MainWindow(QMainWindow):
         self.tcp_signals.message_received.connect(self.on_tcp_message_received)
         self.tcp_signals.message_sent.connect(self.on_tcp_message_sent)
 
+        # Add calibration object
+        self.calibration = Calibration()
+
+        # Add calibration UI elements
+        self.calibration_progress = QProgressBar()
+        self.calibration_progress.setRange(0, 10)
+        self.calibration_progress.setVisible(False)
+
+        self.calibration_status = QLabel("No calibration loaded")
+        self.calibration_status.setStyleSheet("color: #666; font-style: italic;")
+
+        self.save_calibration_btn = QPushButton("💾 Save Calibration")
+        self.save_calibration_btn.clicked.connect(self.save_calibration)
+        self.save_calibration_btn.setEnabled(False)
+        self.save_calibration_btn.setStyleSheet("background-color: #4CAF50; color: white;")
+
+        # Create the load button
+        self.load_calibration_btn = QPushButton("📂 Load Calibration")
+        self.load_calibration_btn.clicked.connect(self.load_calibration)
+        self.load_calibration_btn.setStyleSheet("background-color: #2196F3; color: white;")
+
         self.is_training = False
         self.is_predicting = False
         self.training_start_time = None
@@ -201,6 +225,7 @@ class MainWindow(QMainWindow):
             }
         """)
 
+        # --- ADD CALIBRATION BUTTONS HERE, WITH THE OTHER BUTTONS ---
         top_bar.addWidget(open_folder_btn)
         top_bar.addWidget(self.capture_btn)
         top_bar.addWidget(self.capture2_btn)
@@ -211,8 +236,14 @@ class MainWindow(QMainWindow):
         top_bar.addWidget(self.train_model_btn)
         top_bar.addWidget(load_model_btn)
         top_bar.addWidget(self.labeling_btn)
-        top_bar.addWidget(self.obb_mode_btn)  # Add OBB button after other buttons
+        top_bar.addWidget(self.obb_mode_btn)
+
+        # ADD THE CALIBRATION BUTTONS HERE:
+        top_bar.addWidget(self.load_calibration_btn)
+        top_bar.addWidget(self.save_calibration_btn)
+
         top_bar.addStretch()
+        # --- END OF CALIBRATION BUTTON ADDITION ---
 
         # ---------- Labels Section ----------
         self.label_combo = QComboBox()
@@ -279,14 +310,14 @@ class MainWindow(QMainWindow):
         # Host and Port inputs
         form_layout = QHBoxLayout()
         form_layout.addWidget(QLabel("Host:"))
-        self.host_edit = QLineEdit("127.0.0.1")
+        self.host_edit = QLineEdit("192.168.1.100")
         self.host_edit.setPlaceholderText("Server IP")
         form_layout.addWidget(self.host_edit)
 
         form_layout.addWidget(QLabel("Port:"))
         self.port_spin = QSpinBox()
         self.port_spin.setRange(1, 65535)
-        self.port_spin.setValue(1220)
+        self.port_spin.setValue(8888)
         form_layout.addWidget(self.port_spin)
 
         tcp_layout.addLayout(form_layout)
@@ -400,6 +431,24 @@ class MainWindow(QMainWindow):
         self.model_info_label.setStyleSheet("color: #666; font-style: italic;")
         layout.addWidget(self.model_info_label)
 
+        # ---------- CREATE FILTER WIDGETS HERE (BEFORE USING THEM) ----------
+        self.class_filter_checkbox = QCheckBox("Filter by Class")
+        self.class_filter_combo = QComboBox()
+        self.class_filter_combo.setEnabled(False)
+
+        self.class_filter_checkbox.stateChanged.connect(
+            lambda state: self.class_filter_combo.setEnabled(state == Qt.Checked)
+        )
+
+        # Add filter layout
+        filter_layout = QHBoxLayout()
+        filter_layout.addWidget(self.class_filter_checkbox)
+        filter_layout.addWidget(self.class_filter_combo)
+        filter_layout.addStretch()
+
+        # Add filter layout to main layout
+        layout.addLayout(filter_layout)
+
         container = QWidget()
         container.setLayout(layout)
         self.setCentralWidget(container)
@@ -412,24 +461,6 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+P"), self, activated=self.predict_current_image_with_filter)
         QShortcut(QKeySequence("Ctrl+A"), self, activated=self.auto_add_label)
         QShortcut(QKeySequence("Ctrl+D"), self, activated=self.auto_tcp_scan)
-
-        # Add to your toolbar or right column
-        self.class_filter_checkbox = QCheckBox("Filter by Class")
-        self.class_filter_combo = QComboBox()
-        self.class_filter_combo.setEnabled(False)
-
-        self.class_filter_checkbox.stateChanged.connect(
-            lambda state: self.class_filter_combo.setEnabled(state == Qt.Checked)
-        )
-
-        # Add to your layout
-        filter_layout = QHBoxLayout()
-        filter_layout.addWidget(self.class_filter_checkbox)
-        filter_layout.addWidget(self.class_filter_combo)
-        filter_layout.addStretch()
-
-        # Add this to your main layout somewhere
-        layout.addLayout(filter_layout)
 
     def on_annotation_status(self, message):
         """Handle status messages from annotation widget"""
@@ -1587,6 +1618,7 @@ class MainWindow(QMainWindow):
 
             predictions = []
             coordinate_strings = []  # Store coordinate strings for TCP sending
+            world_coordinate_strings = []  # Store world coordinate strings for TCP sending
 
             if results and len(results) > 0:
                 result = results[0]
@@ -1621,27 +1653,49 @@ class MainWindow(QMainWindow):
                             x2 = float(np.max(x_coords))
                             y2 = float(np.max(y_coords))
 
+                            # Convert pixel coordinates to world coordinates for all 4 corners
+                            world_corners = []
+                            if hasattr(self, 'calibration') and self.calibration.is_calibrated:
+                                for corner in corners:
+                                    world_point = self.calibration.pixel_to_world((corner[0], corner[1]))
+                                    if world_point:
+                                        world_corners.append(world_point)
+                                    else:
+                                        world_corners.append((corner[0], corner[1]))  # Fallback to pixel
+                            else:
+                                # If not calibrated, use pixel coordinates
+                                world_corners = [(corner[0], corner[1]) for corner in corners]
+
                             predictions.append({
                                 'bbox': [x1, y1, x2, y2],
                                 'corners': corners.tolist(),  # Store corners for OBB
+                                'world_corners': world_corners,  # Store world coordinates
                                 'confidence': conf,
                                 'class_id': cls,
                                 'class_name': class_name,
                                 'is_obb': True
                             })
 
-                            # Format coordinates for TCP sending: x1_y1,x2_y2,x3_y3,x4_y4
+                            # Format pixel coordinates for TCP sending: x1_y1,x2_y2,x3_y3,x4_y4
                             coord_string = (f"{corners[0][0]:.2f}_{corners[0][1]:.2f},"
                                             f"{corners[1][0]:.2f}_{corners[1][1]:.2f},"
                                             f"{corners[2][0]:.2f}_{corners[2][1]:.2f},"
                                             f"{corners[3][0]:.2f}_{corners[3][1]:.2f}")
 
-                            coordinate_strings.append(coord_string)
+                            # Format world coordinates for TCP sending
+                            world_coord_string = (f"{world_corners[0][0]:.2f}_{world_corners[0][1]:.2f},"
+                                                  f"{world_corners[1][0]:.2f}_{world_corners[1][1]:.2f},"
+                                                  f"{world_corners[2][0]:.2f}_{world_corners[2][1]:.2f},"
+                                                  f"{world_corners[3][0]:.2f}_{world_corners[3][1]:.2f}")
 
-                            print(f"\n🔹 Detection #{i + 1}:")
+                            coordinate_strings.append(coord_string)
+                            world_coordinate_strings.append(world_coord_string)
+
+                            print(f"\n🔹 OBB Detection #{i + 1}:")
                             print(f"   Class: {class_name} (ID: {cls})")
                             print(f"   Confidence: {conf:.3f}")
-                            print(f"   Coordinates: {coord_string}")
+                            print(f"   Pixel Coordinates: {coord_string}")
+                            print(f"   World Coordinates: {world_coord_string}")
 
                         except Exception as e:
                             print(f"Error processing OBB detection {i}: {e}")
@@ -1662,117 +1716,171 @@ class MainWindow(QMainWindow):
                             if hasattr(result, 'names') and result.names:
                                 class_name = result.names.get(cls, f"class_{cls}")
 
+                            # Get bounding box coordinates
+                            x1, y1, x2, y2 = box
+
+                            # Convert corner points to world coordinates
+                            # For regular boxes, convert all 4 corners
+                            corners_pixel = [
+                                (x1, y1),  # top-left
+                                (x2, y1),  # top-right
+                                (x2, y2),  # bottom-right
+                                (x1, y2)  # bottom-left
+                            ]
+
+                            world_corners = []
+                            if hasattr(self, 'calibration') and self.calibration.is_calibrated:
+                                for corner in corners_pixel:
+                                    world_point = self.calibration.pixel_to_world((corner[0], corner[1]))
+                                    if world_point:
+                                        world_corners.append(world_point)
+                                    else:
+                                        world_corners.append((corner[0], corner[1]))  # Fallback to pixel
+                            else:
+                                # If not calibrated, use pixel coordinates
+                                world_corners = corners_pixel
+
                             predictions.append({
                                 'bbox': box.tolist(),
+                                'world_bbox': [world_corners[0][0], world_corners[0][1],
+                                               world_corners[2][0], world_corners[2][1]],  # x1,y1,x2,y2 in world
                                 'confidence': conf,
                                 'class_id': cls,
                                 'class_name': class_name,
-                                'is_obb': False
+                                'is_obb': False,
+                                'world_corners': world_corners  # Store all 4 corners in world coordinates
                             })
 
                             # For regular boxes, convert to 4-corner format (top-left, top-right, bottom-right, bottom-left)
-                            x1, y1, x2, y2 = box
-
-                            # Format: x1_y1,x2_y1,x2_y2,x1_y2
+                            # Pixel coordinates
                             coord_string = (f"{x1:.2f}_{y1:.2f},"
                                             f"{x2:.2f}_{y1:.2f},"
                                             f"{x2:.2f}_{y2:.2f},"
                                             f"{x1:.2f}_{y2:.2f}")
 
-                            coordinate_strings.append(coord_string)
+                            # World coordinates
+                            world_coord_string = (f"{world_corners[0][0]:.2f}_{world_corners[0][1]:.2f},"
+                                                  f"{world_corners[1][0]:.2f}_{world_corners[1][1]:.2f},"
+                                                  f"{world_corners[2][0]:.2f}_{world_corners[2][1]:.2f},"
+                                                  f"{world_corners[3][0]:.2f}_{world_corners[3][1]:.2f}")
 
-                            print(f"\n🔹 Detection #{i + 1}:")
+                            coordinate_strings.append(coord_string)
+                            world_coordinate_strings.append(world_coord_string)
+
+                            print(f"\n🔹 Regular Detection #{i + 1}:")
                             print(f"   Class: {class_name} (ID: {cls})")
                             print(f"   Confidence: {conf:.3f}")
-                            print(f"   Coordinates: {coord_string}")
+                            print(f"   Pixel Coordinates: {coord_string}")
+                            print(f"   World Coordinates: {world_coord_string}")
 
                         except Exception as e:
                             print(f"Error processing detection {i}: {e}")
                             continue
 
-                # Print summary
-                print(f"\n{'=' * 60}")
-                print(f"✅ TOTAL DETECTIONS: {len(predictions)}")
+                    # Print summary
+                    print(f"\n{'=' * 60}")
+                    print(f"✅ TOTAL DETECTIONS: {len(predictions)}")
+                    if class_filter is not None:
+                        class_names = self.current_model.names if hasattr(self.current_model, 'names') else {}
+                        class_name = class_names.get(class_filter, f"class_{class_filter}")
+                        print(f"🎯 FILTERED CLASS: {class_filter} ({class_name})")
+
+                    # Show calibration status
+                    if hasattr(self, 'calibration') and self.calibration.is_calibrated:
+                        print(f"📐 Calibration: Active - Using world coordinates")
+                    else:
+                        print(f"📐 Calibration: Inactive - Using pixel coordinates")
+                    print(f"{'=' * 60}\n")
+
+                # Send coordinates to server via TCP/IP
+                if world_coordinate_strings:  # Prefer sending world coordinates if available
+                    server_ip = self.host_edit.text().strip()
+                    server_port = self.port_spin.value()
+
+                    # Validate inputs
+                    if not server_ip:
+                        print("❌ No server IP address specified")
+                        return
+
+                    try:
+                        # Create socket connection
+                        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        sock.settimeout(5)  # 5 second timeout
+
+                        print(f"\n📡 Connecting to server {server_ip}:{server_port}...")
+                        sock.connect((server_ip, server_port))
+
+                        message = "\n".join(world_coordinate_strings) + "\n"
+
+                        # Send data
+                        sock.sendall(message.encode('utf-8'))
+                        print(
+                            f"✅ Sent {len(world_coordinate_strings)} coordinate sets to server")
+
+                        # Optionally receive response
+                        try:
+                            response = sock.recv(1024)
+                            print(f"📨 Server response: {response.decode('utf-8').strip()}")
+                        except:
+                            print("⚠️ No response from server")
+
+                        sock.close()
+
+                    except socket.timeout:
+                        print(f"❌ Connection timeout to {server_ip}:{server_port}")
+                    except socket.error as e:
+                        print(f"❌ Socket error: {e}")
+                    except Exception as e:
+                        print(f"❌ Error sending to server: {e}")
+                else:
+                    print("\n⚠️ No coordinates to send to server")
+
+                # Save results
+                output_dir = os.path.join(os.path.dirname(image_path), "predictions")
+                os.makedirs(output_dir, exist_ok=True)
+
+                output_filename = f"pred_{os.path.basename(image_path)}"
+                output_path = os.path.join(output_dir, output_filename)
+
+                if results and len(results) > 0:
+                    result.save(filename=output_path)
+                    print(f"📁 Results saved to: {output_path}")
+
+                    # Also save a JSON file with world coordinates
+                    json_output_path = os.path.join(output_dir,
+                                                    f"pred_{os.path.splitext(os.path.basename(image_path))[0]}.json")
+                    with open(json_output_path, 'w') as f:
+                        json.dump({
+                            "image": image_path,
+                            "predictions": predictions,
+                            "calibration_active": hasattr(self, 'calibration') and self.calibration.is_calibrated
+                        }, f, indent=2)
+                    print(f"📁 JSON results saved to: {json_output_path}")
+
+                self.prediction_signals.progress.emit(90, "Saving results...")
+
+                # Display predictions in viewer
+                self.viewer.display_predictions(predictions)
+
+                # Show summary message
                 if class_filter is not None:
                     class_names = self.current_model.names if hasattr(self.current_model, 'names') else {}
                     class_name = class_names.get(class_filter, f"class_{class_filter}")
-                    print(f"🎯 FILTERED CLASS: {class_filter} ({class_name})")
-                print(f"{'=' * 60}\n")
+                    message = f"Found {len(predictions)} objects of class {class_filter} ({class_name})"
+                else:
+                    message = f"Found {len(predictions)} objects"
 
-            # Send coordinates to server via TCP/IP
-            if coordinate_strings:
-                server_ip = "127.0.0.1"
-                server_port = 1220
+                # Add calibration info to message
+                if hasattr(self, 'calibration') and self.calibration.is_calibrated:
+                    message += " (world coordinates sent)"
 
-                try:
-                    # Create socket connection
-                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    sock.settimeout(5)  # 5 second timeout
+                self.prediction_signals.progress.emit(100, "Done!")
+                self.prediction_signals.finished.emit(True, message, predictions)
+                self.prediction_signals.image_ready.emit(output_path)
 
-                    print(f"\n📡 Connecting to server {server_ip}:{server_port}...")
-                    sock.connect((server_ip, server_port))
-
-                    # Prepare data to send
-                    # Option 1: Send all coordinates as a single message with newline separator
-                    message = "\n".join(coordinate_strings) + "\n"
-
-                    # Option 2: Send as JSON if you prefer structured data
-                    # json_data = {
-                    #     "image": os.path.basename(image_path),
-                    #     "detections": coordinate_strings,
-                    #     "count": len(coordinate_strings)
-                    # }
-                    # message = json.dumps(json_data) + "\n"
-
-                    # Send data
-                    sock.sendall(message.encode('utf-8'))
-                    print(f"✅ Sent {len(coordinate_strings)} coordinate sets to server")
-
-                    # Optionally receive response
-                    try:
-                        response = sock.recv(1024)
-                        print(f"📨 Server response: {response.decode('utf-8').strip()}")
-                    except:
-                        print("⚠️ No response from server")
-
-                    sock.close()
-
-                except socket.timeout:
-                    print(f"❌ Connection timeout to {server_ip}:{server_port}")
-                except socket.error as e:
-                    print(f"❌ Socket error: {e}")
-                except Exception as e:
-                    print(f"❌ Error sending to server: {e}")
             else:
-                print("\n⚠️ No coordinates to send to server")
-
-            # Save results
-            output_dir = os.path.join(os.path.dirname(image_path), "predictions")
-            os.makedirs(output_dir, exist_ok=True)
-
-            output_filename = f"pred_{os.path.basename(image_path)}"
-            output_path = os.path.join(output_dir, output_filename)
-
-            if results and len(results) > 0:
-                result.save(filename=output_path)
-                print(f"📁 Results saved to: {output_path}")
-
-            self.prediction_signals.progress.emit(90, "Saving results...")
-
-            # Display predictions in viewer
-            self.viewer.display_predictions(predictions)
-
-            # Show summary message
-            if class_filter is not None:
-                class_names = self.current_model.names if hasattr(self.current_model, 'names') else {}
-                class_name = class_names.get(class_filter, f"class_{class_filter}")
-                message = f"Found {len(predictions)} objects of class {class_filter} ({class_name})"
-            else:
-                message = f"Found {len(predictions)} objects"
-
-            self.prediction_signals.progress.emit(100, "Done!")
-            self.prediction_signals.finished.emit(True, message, predictions)
-            self.prediction_signals.image_ready.emit(output_path)
+                print("\n⚠️ No detections found")
+                self.prediction_signals.finished.emit(True, "No objects detected", [])
 
         except Exception as e:
             import traceback
@@ -1783,7 +1891,6 @@ class MainWindow(QMainWindow):
             self.prediction_signals.finished.emit(False, error_msg, [])
         finally:
             self.is_predicting = False
-
 
     # def predict_current_image(self):
     #     """Run inference on the current image"""
@@ -2389,3 +2496,177 @@ class MainWindow(QMainWindow):
             self.disconnect_tcp()
 
         event.accept()
+
+    def load_calibration(self):
+        """Load calibration from file"""
+        filepath, _ = QFileDialog.getOpenFileName(
+            self, "Load Calibration File",
+            "", "JSON Files (*.json)"
+        )
+
+        if filepath:
+            success, message = self.calibration.load_calibration(filepath)
+            if success:
+                # Update UI
+                if hasattr(self, 'calibration_progress'):
+                    self.calibration_progress.setValue(len(self.calibration.pixel_points))
+                    self.calibration_progress.setVisible(True)
+
+                if hasattr(self, 'calibration_status'):
+                    self.calibration_status.setText(f"Calibration loaded - {len(self.calibration.pixel_points)} points")
+
+                if hasattr(self, 'save_calibration_btn'):
+                    self.save_calibration_btn.setEnabled(True)
+
+                # Clear and re-add points to image (assuming viewer has these methods)
+                if hasattr(self.viewer, 'clear_calibration_points'):
+                    self.viewer.clear_calibration_points()
+
+                for i, (pixel, world) in enumerate(zip(self.calibration.pixel_points, self.calibration.world_points)):
+                    if hasattr(self.viewer, 'add_calibration_point'):
+                        self.viewer.add_calibration_point(
+                            pixel[0], pixel[1], world[0], world[1]
+                        )
+
+                self.update_tcp_messages(f"[Calibration] 📂 Loaded: {filepath}")
+                QMessageBox.information(self, "Calibration Loaded", message)
+            else:
+                QMessageBox.warning(self, "Load Failed", message)
+
+    def save_calibration(self):
+        """Save calibration to file"""
+        if not hasattr(self.viewer, 'calibration_points') or not self.viewer.calibration_points:
+            QMessageBox.warning(self, "No Calibration Points",
+                                "No calibration points to save.")
+            return
+
+        filepath, _ = QFileDialog.getSaveFileName(
+            self, "Save Calibration File",
+            "", "JSON Files (*.json)"
+        )
+
+        if filepath:
+            try:
+                # Collect points from viewer
+                pixel_points = []
+                world_points = []
+
+                for point in self.viewer.calibration_points:
+                    pixel_points.append([point.pixel_x, point.pixel_y])
+                    world_points.append([point.world_x, point.world_y])
+
+                data = {
+                    'pixel_points': pixel_points,
+                    'world_points': world_points,
+                    'timestamp': datetime.now().isoformat()
+                }
+
+                with open(filepath, 'w') as f:
+                    json.dump(data, f, indent=2)
+
+                self.update_tcp_messages(f"[Calibration] 💾 Saved: {filepath}")
+                QMessageBox.information(self, "Calibration Saved",
+                                        f"Saved {len(pixel_points)} calibration points")
+
+            except Exception as e:
+                QMessageBox.critical(self, "Save Failed", f"Error saving calibration: {str(e)}")
+class Calibration:
+    """Handles camera calibration data and transformations"""
+
+    def __init__(self):
+        self.pixel_points = []  # List of (x, y) pixel coordinates
+        self.world_points = []  # List of (x, y) world coordinates
+        self.calibration_matrix = None
+        self.is_calibrated = False
+        self.calibration_file = None
+
+    def add_point_pair(self, pixel_point, world_point):
+        """Add a pixel-world coordinate pair"""
+        self.pixel_points.append(pixel_point)
+        self.world_points.append(world_point)
+
+    def perform_calibration(self):
+        """Perform perspective transformation calibration"""
+        if len(self.pixel_points) < 4:
+            return False, "Need at least 4 points for calibration"
+
+        try:
+            # Convert to numpy arrays
+            src = np.array(self.pixel_points, dtype=np.float32)
+            dst = np.array(self.world_points, dtype=np.float32)
+
+            # Calculate homography matrix (perspective transformation)
+            self.calibration_matrix, _ = cv2.findHomography(src, dst, cv2.RANSAC, 5.0)
+
+            if self.calibration_matrix is not None:
+                self.is_calibrated = True
+                return True, "Calibration successful"
+            else:
+                return False, "Failed to calculate calibration matrix"
+
+        except Exception as e:
+            return False, f"Calibration error: {str(e)}"
+
+    def pixel_to_world(self, pixel_point):
+        """Convert pixel coordinates to world coordinates"""
+        if not self.is_calibrated or self.calibration_matrix is None:
+            return None
+
+        try:
+            # Convert single point
+            pixel_array = np.array([[pixel_point[0], pixel_point[1]]], dtype=np.float32)
+            world_array = cv2.perspectiveTransform(pixel_array.reshape(-1, 1, 2),
+                                                   self.calibration_matrix)
+            world_point = world_array[0][0]
+            return (float(world_point[0]), float(world_point[1]))
+        except Exception as e:
+            print(f"Conversion error: {e}")
+            return None
+
+    def save_calibration(self, filepath):
+        """Save calibration data to JSON file"""
+        if not self.is_calibrated:
+            return False, "Not calibrated"
+
+        try:
+            calibration_data = {
+                'calibration_matrix': self.calibration_matrix.tolist(),
+                'pixel_points': self.pixel_points,
+                'world_points': self.world_points,
+                'timestamp': time.strftime("%Y-%m-%d %H:%M:%S")
+            }
+
+            with open(filepath, 'w') as f:
+                json.dump(calibration_data, f, indent=2)
+
+            self.calibration_file = filepath
+            return True, f"Calibration saved to {filepath}"
+
+        except Exception as e:
+            return False, f"Failed to save calibration: {str(e)}"
+
+    def load_calibration(self, filepath):
+        """Load calibration data from JSON file"""
+        try:
+            with open(filepath, 'r') as f:
+                calibration_data = json.load(f)
+
+            self.calibration_matrix = np.array(calibration_data['calibration_matrix'])
+            self.pixel_points = calibration_data['pixel_points']
+            self.world_points = calibration_data['world_points']
+            self.is_calibrated = True
+            self.calibration_file = filepath
+
+            return True, f"Calibration loaded from {filepath}"
+
+        except Exception as e:
+            return False, f"Failed to load calibration: {str(e)}"
+
+    def get_calibration_status(self):
+        """Get calibration status information"""
+        return {
+            'is_calibrated': self.is_calibrated,
+            'num_points': len(self.pixel_points),
+            'calibration_file': self.calibration_file
+        }
+

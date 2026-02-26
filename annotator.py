@@ -1802,3 +1802,24 @@ You may need to move files to the appropriate train/val folders.
     #         print("  Sample pixel format:")
     #         for i, line in enumerate(lines[:3]):
     #             print(f"    Box {i}: {line}")
+    def clear_calibration_points(self):
+        """Clear all calibration points"""
+        if hasattr(self, 'calibration_points'):
+            self.calibration_points.clear()
+        self.update()
+
+    def add_calibration_point(self, pixel_x, pixel_y, world_x, world_y):
+        """Add a calibration point"""
+        if not hasattr(self, 'calibration_points'):
+            self.calibration_points = []
+
+        # Create a simple point object
+        class CalibrationPoint:
+            def __init__(self, px, py, wx, wy):
+                self.pixel_x = px
+                self.pixel_y = py
+                self.world_x = wx
+                self.world_y = wy
+
+        self.calibration_points.append(CalibrationPoint(pixel_x, pixel_y, world_x, world_y))
+        self.update()
