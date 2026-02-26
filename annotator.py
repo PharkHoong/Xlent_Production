@@ -1635,36 +1635,75 @@ You may need to move files to the appropriate train/val folders.
 
     def display_predictions(self, predictions):
         """Display model predictions on the image"""
-        print(f"DEBUG [AnnotationWidget]: Received {len(predictions)} predictions")
+        try:
+            print(f"DEBUG [AnnotationWidget]: Received {len(predictions)} predictions")
 
-        # Clear existing boxes first
-        self.boxes.clear()
+            # Clear existing boxes first
+            self.boxes.clear()
+            self.regular_boxes = self.boxes  # Update reference
+            self.rotated_boxes.clear()  # Also clear rotated boxes
 
-        for i, pred in enumerate(predictions):
-            bbox = pred.get('bbox', [0, 0, 0, 0])
-            confidence = pred.get('confidence', 0.0)
-            class_id = pred.get('class_id', 0)
-            actual_class_name = pred.get('class_name', f'class_{class_id}')  # Get the actual name
+            for i, pred in enumerate(predictions):
+                try:
+                    bbox = pred.get('bbox', [0, 0, 0, 0])
+                    confidence = pred.get('confidence', 0.0)
+                    class_id = pred.get('class_id', 0)
+                    actual_class_name = pred.get('class_name', f'class_{class_id}')
+                    is_obb = pred.get('is_obb', False)
 
-            # Use the actual class name
-            label = f"{actual_class_name} ({confidence:.2f})"  # This will be "PLC (0.99)"
+                    # Use the actual class name
+                    label = f"{actual_class_name} ({confidence:.2f})"
 
-            # Create QRectF from bbox
-            if len(bbox) >= 4:
-                rect = QRectF(bbox[0], bbox[1], bbox[2] - bbox[0], bbox[3] - bbox[1])
+                    # Create QRectF from bbox
+                    if len(bbox) >= 4:
+                        rect = QRectF(bbox[0], bbox[1], bbox[2] - bbox[0], bbox[3] - bbox[1])
 
-                print(f"DEBUG [AnnotationWidget] Prediction {i}:")
-                print(f"  - Class: '{actual_class_name}' (ID: {class_id})")  # Changed this line
-                print(f"  - Storing label as: '{label}'")
-                print(f"  - BBox: {bbox}")
-                print(f"  - Confidence: {confidence:.2f}")
+                        print(f"DEBUG [AnnotationWidget] Prediction {i}:")
+                        print(f"  - Class: '{actual_class_name}' (ID: {class_id})")
+                        print(f"  - Label: '{label}'")
+                        print(f"  - BBox: {bbox}")
+                        print(f"  - Confidence: {confidence:.2f}")
+                        print(f"  - Is OBB: {is_obb}")
 
-                self.boxes.append((rect, label))
-            else:
-                print(f"  - ERROR: Invalid bbox format: {bbox}")
+                        if is_obb and 'corners' in pred:
+                            # Handle OBB prediction
+                            corners = pred['corners']
+                            if len(corners) == 4:
+                                # Calculate OBB parameters from corners
+                                cx = sum(c[0] for c in corners) / 4
+                                cy = sum(c[1] for c in corners) / 4
 
-        self.update()
-        print(f"DEBUG [AnnotationWidget]: Updated with {len(self.boxes)} boxes")
+                                # Calculate width, height, angle
+                                width = math.sqrt(
+                                    (corners[1][0] - corners[0][0]) ** 2 + (corners[1][1] - corners[0][1]) ** 2)
+                                height = math.sqrt(
+                                    (corners[2][0] - corners[1][0]) ** 2 + (corners[2][1] - corners[1][1]) ** 2)
+                                angle = math.degrees(math.atan2(
+                                    corners[1][1] - corners[0][1],
+                                    corners[1][0] - corners[0][0]
+                                ))
+
+                                self.rotated_boxes.append((cx, cy, width, height, angle, label))
+                        else:
+                            # Handle regular box
+                            self.boxes.append((rect, label))
+                    else:
+                        print(f"  - ERROR: Invalid bbox format: {bbox}")
+
+                except Exception as e:
+                    print(f"Error processing prediction {i}: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    continue
+
+            self.update()
+            print(
+                f"DEBUG [AnnotationWidget]: Updated with {len(self.boxes)} regular boxes and {len(self.rotated_boxes)} rotated boxes")
+
+        except Exception as e:
+            print(f"FATAL ERROR in display_predictions: {e}")
+            import traceback
+            traceback.print_exc()
 
     ##get annotation output
     # def save_predictions_as_annotations(self, image_path, predictions, format_type="yolo"):
