@@ -255,9 +255,9 @@ class MainWindow(QMainWindow):
     def on_annotation_status(self, message):
         """Handle status messages from annotation widget"""
         self.status_label.setText(message)
-        if "OBB" in message or "corner" in message:
-            timestamp = time.strftime("%H:%M:%S")
-            print(f"[{timestamp}] 🎯 {message}")
+        # Remove the OBB condition entirely or keep only TCP messages if needed
+        timestamp = time.strftime("%H:%M:%S")
+        self.update_tcp_messages(f"[{timestamp}] {message}")
 
 
     def create_required_folders(self):
@@ -418,7 +418,6 @@ class MainWindow(QMainWindow):
 
             # Get bounding box coordinates
             box = self.pending_box
-            label = self.pending_box_label
 
             # Convert QRectF coordinates to pixel integers
             x1 = max(0, int(box.x()))

@@ -126,37 +126,12 @@ class MainWindow(QMainWindow):
         self.labeling_btn.setStyleSheet("background-color: #795548; color: white; font-weight: bold;")
         self.labeling_btn.setToolTip("Auto connect TCP and send bounding box coordinates")
 
-        # Add OBB toggle button to top bar
-        self.obb_mode_btn = QPushButton("OBB Mode OFF")
-        self.obb_mode_btn.setCheckable(True)
-        self.obb_mode_btn.clicked.connect(self.toggle_obb_mode)
-        self.obb_mode_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #9C27B0;
-                color: white;
-                font-weight: bold;
-                padding: 5px;
-            }
-            QPushButton:checked {
-                background-color: #FF9800;
-            }
-        """)
-
         # --- ADD CALIBRATION BUTTONS HERE, WITH THE OTHER BUTTONS ---
         top_bar.addWidget(self.capture_btn)
         top_bar.addWidget(undo_btn)
         top_bar.addWidget(delete_btn)
         top_bar.addWidget(self.labeling_btn)
-        top_bar.addWidget(self.obb_mode_btn)
         top_bar.addStretch()
-
-        # ---------- Labels Section ----------
-        self.label_combo = QComboBox()
-        self.label_combo.addItems(self.labels)
-
-        label_bar = QHBoxLayout()
-        label_bar.addWidget(self.label_combo)
-        label_bar.addStretch()
 
         # ---------- Main Content Area ----------
         content_layout = QHBoxLayout()
@@ -318,35 +293,11 @@ class MainWindow(QMainWindow):
         content_layout.addLayout(right_column, 30)
 
         layout.addLayout(top_bar)
-        layout.addLayout(label_bar)
         layout.addLayout(content_layout)
 
         # ---------- Status Bar ----------
         self.status_label = QLabel("Ready")
         layout.addWidget(self.status_label)
-
-        # Model info label
-        self.model_info_label = QLabel("No model loaded")
-        self.model_info_label.setStyleSheet("color: #666; font-style: italic;")
-        layout.addWidget(self.model_info_label)
-
-        # ---------- CREATE FILTER WIDGETS HERE (BEFORE USING THEM) ----------
-        self.class_filter_checkbox = QCheckBox("Filter by Class")
-        self.class_filter_combo = QComboBox()
-        self.class_filter_combo.setEnabled(False)
-
-        self.class_filter_checkbox.stateChanged.connect(
-            lambda state: self.class_filter_combo.setEnabled(state == Qt.Checked)
-        )
-
-        # Add filter layout
-        filter_layout = QHBoxLayout()
-        filter_layout.addWidget(self.class_filter_checkbox)
-        filter_layout.addWidget(self.class_filter_combo)
-        filter_layout.addStretch()
-
-        # Add filter layout to main layout
-        layout.addLayout(filter_layout)
 
         container = QWidget()
         container.setLayout(layout)
@@ -360,41 +311,9 @@ class MainWindow(QMainWindow):
     def on_annotation_status(self, message):
         """Handle status messages from annotation widget"""
         self.status_label.setText(message)
-        # Also update TCP messages display if needed
-        if "OBB" in message or "corner" in message:
-            timestamp = time.strftime("%H:%M:%S")
-            self.update_tcp_messages(f"[{timestamp}] 🎯 {message}")
-
-    def toggle_obb_mode(self, checked):
-        """Toggle Oriented Bounding Box mode"""
-        # Call the viewer's toggle_obb_mode method
-        self.viewer.toggle_obb_mode(checked)
-
-        # Set/remove OBB mode flag file
-        self.viewer.set_obb_mode_flag(os.getcwd(), checked)
-
-        if checked:
-            self.obb_mode_btn.setText("OBB Mode ON")
-            self.obb_mode_btn.setStyleSheet("""
-                QPushButton:checked {
-                    background-color: #FF9800;
-                    color: white;
-                    font-weight: bold;
-                    padding: 5px;
-                }
-            """)
-            self.status_label.setText("OBB Mode: Click 4 corners to define rotated box")
-        else:
-            self.obb_mode_btn.setText("OBB Mode OFF")
-            self.obb_mode_btn.setStyleSheet("""
-                QPushButton {
-                    background-color: #9C27B0;
-                    color: white;
-                    font-weight: bold;
-                    padding: 5px;
-                }
-            """)
-            self.status_label.setText("Ready")
+        # Remove the OBB condition entirely or keep only TCP messages if needed
+        timestamp = time.strftime("%H:%M:%S")
+        self.update_tcp_messages(f"[{timestamp}] {message}")
 
     def create_required_folders(self):
         """Create all required folders if they don't exist"""
@@ -415,10 +334,9 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            # Count ALL boxes (regular + rotated)
+            # Count ONLY regular boxes (remove rotated_count)
             regular_count = len(self.viewer.boxes) if hasattr(self.viewer, 'boxes') else 0
-            rotated_count = len(self.viewer.rotated_boxes) if hasattr(self.viewer, 'rotated_boxes') else 0
-            current_count = regular_count + rotated_count
+            current_count = regular_count  # Remove rotated_count
 
             # If more than one box total
             if current_count > 1:
@@ -445,14 +363,9 @@ class MainWindow(QMainWindow):
 
                 # Store the latest box if it exists
                 if current_count == 1:
-                    if regular_count == 1:
-                        latest_box, latest_label = self.viewer.boxes[0]
-                        self.last_bounding_box = (latest_box, latest_label)
-                        self.last_box_label = latest_label
-                    elif rotated_count == 1:
-                        # Handle rotated box - store for auto-crop
-                        # You might need to convert rotated box to rect for cropping
-                        pass
+                    latest_box, latest_label = self.viewer.boxes[0]
+                    self.last_bounding_box = (latest_box, latest_label)
+                    self.last_box_label = latest_label
 
         except Exception as e:
             print(f"Error in track_bounding_box_changes: {e}")
@@ -992,8 +905,7 @@ class MainWindow(QMainWindow):
             self.viewer.current_rect = None
         if hasattr(self.viewer, 'temp_box_corners'):
             self.viewer.temp_box_corners = []
-        if hasattr(self.viewer, 'obb_corners'):
-            self.viewer.obb_corners = []
+        # Remove obb_corners reference
         if hasattr(self.viewer, 'update'):
             self.viewer.update()
 
@@ -1025,7 +937,6 @@ class MainWindow(QMainWindow):
             self.viewer.drawing = False
             self.viewer.current_rect = None
             self.viewer.temp_box_corners = []
-            self.viewer.obb_corners = []
             self.viewer.update()
         except Exception as e:
             print(f"Error in force_reset_viewer: {e}")
