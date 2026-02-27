@@ -198,27 +198,10 @@ class MainWindow(QMainWindow):
             }
         """)
 
-        # Add OBB toggle button
-        self.obb_mode_btn = QPushButton("OBB Mode OFF")
-        self.obb_mode_btn.setCheckable(True)
-        self.obb_mode_btn.clicked.connect(self.toggle_obb_mode)
-        self.obb_mode_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #9C27B0;
-                color: white;
-                font-weight: bold;
-                padding: 5px;
-            }
-            QPushButton:checked {
-                background-color: #FF9800;
-            }
-        """)
-
         top_bar.addWidget(self.capture_btn)
         top_bar.addWidget(undo_btn)
         top_bar.addWidget(delete_btn)
         top_bar.addWidget(self.save_box_btn)
-        top_bar.addWidget(self.obb_mode_btn)
         top_bar.addStretch()
 
         # ---------- Calibration Status Bar (no progress bar) ----------
@@ -276,36 +259,6 @@ class MainWindow(QMainWindow):
             timestamp = time.strftime("%H:%M:%S")
             print(f"[{timestamp}] 🎯 {message}")
 
-    def toggle_obb_mode(self, checked):
-        """Toggle Oriented Bounding Box mode"""
-        # Call the viewer's toggle_obb_mode method
-        self.viewer.toggle_obb_mode(checked)
-
-        # Set/remove OBB mode flag file
-        self.viewer.set_obb_mode_flag(self.labeling_path, checked)
-
-        if checked:
-            self.obb_mode_btn.setText("OBB Mode ON")
-            self.obb_mode_btn.setStyleSheet("""
-                QPushButton:checked {
-                    background-color: #FF9800;
-                    color: white;
-                    font-weight: bold;
-                    padding: 5px;
-                }
-            """)
-            self.status_label.setText("OBB Mode: Click 4 corners to define rotated box")
-        else:
-            self.obb_mode_btn.setText("OBB Mode OFF")
-            self.obb_mode_btn.setStyleSheet("""
-                QPushButton {
-                    background-color: #9C27B0;
-                    color: white;
-                    font-weight: bold;
-                    padding: 5px;
-                }
-            """)
-            self.status_label.setText("Ready")
 
     def create_required_folders(self):
         """Create all required folders if they don't exist"""
@@ -324,77 +277,109 @@ class MainWindow(QMainWindow):
 
     def track_bounding_box_changes(self):
         """Track when new bounding boxes are drawn"""
-        if hasattr(self.viewer, 'boxes'):
-            current_count = len(self.viewer.boxes)
+        if not hasattr(self.viewer, 'boxes'):
+            return
 
-            # If new boxes were added
-            if current_count > self.previous_box_count:
-                # If this is the first box
+        try:
+            # Count ALL boxes (regular + rotated)
+            regular_count = len(self.viewer.boxes) if hasattr(self.viewer, 'boxes') else 0
+            rotated_count = len(self.viewer.rotated_boxes) if hasattr(self.viewer, 'rotated_boxes') else 0
+            current_count = regular_count + rotated_count
+
+            # If more than one box total
+            if current_count > 1:
+                # Use the safe clear method
+                self.viewer.safe_clear_boxes()
+
+                # Reset tracking variables
+                self.last_bounding_box = None
+                self.last_box_label = None
+                self.pending_box = None  # <-- ADD THIS
+                self.pending_box_label = None  # <-- ADD THIS
+                self.previous_box_count = 0
+
+                # Disable save button
+                self.save_box_btn.setEnabled(False)
+                self.save_box_btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: #cccccc;
+                        color: #666666;
+                        font-weight: bold;
+                        padding: 5px;
+                    }
+                """)
+
+                # Show error message
+                QTimer.singleShot(100, lambda: QMessageBox.critical(
+                    self,
+                    "Error",
+                    "Only ONE bounding box allowed!\n\nAll boxes have been cleared."
+                ))
+
+                self.status_label.setText("Error: Only one box allowed. Boxes cleared.")
+
+            else:
+                # Update previous count
+                self.previous_box_count = current_count
+
+                # Store the latest box if it exists
                 if current_count == 1:
-                    # Get the latest box
-                    latest_box, latest_label = self.viewer.boxes[-1]
+                    if regular_count == 1:
+                        latest_box, latest_label = self.viewer.boxes[0]
 
-                    # Store as pending box waiting for confirmation
-                    self.pending_box = latest_box
-                    self.pending_box_label = latest_label
+                        # Set BOTH variables
+                        self.last_bounding_box = (latest_box, latest_label)
+                        self.last_box_label = latest_label
+                        self.pending_box = latest_box  # <-- ADD THIS
+                        self.pending_box_label = latest_label  # <-- ADD THIS
 
-                    # Enable the save button
-                    self.save_box_btn.setEnabled(True)
+                        # Enable the save button
+                        self.save_box_btn.setEnabled(True)
+                        self.save_box_btn.setStyleSheet("""
+                            QPushButton {
+                                background-color: #4CAF50;
+                                color: white;
+                                font-weight: bold;
+                                padding: 5px;
+                            }
+                        """)
+
+                    elif rotated_count == 1:
+                        # Handle rotated box
+                        # You need to get the rotated box data and convert/store it
+                        rotated_box = self.viewer.rotated_boxes[0]
+                        # For now, just set pending_box to None since save_current_box expects a rect
+                        self.pending_box = None
+                        self.pending_box_label = None
+                        self.save_box_btn.setEnabled(False)
+                else:
+                    # No boxes - disable save button
+                    self.save_box_btn.setEnabled(False)
+                    self.pending_box = None  # <-- ADD THIS
+                    self.pending_box_label = None  # <-- ADD THIS
                     self.save_box_btn.setStyleSheet("""
                         QPushButton {
-                            background-color: #4CAF50;
-                            color: white;
+                            background-color: #cccccc;
+                            color: #666666;
                             font-weight: bold;
                             padding: 5px;
                         }
                     """)
 
-                    # Update status
-                    timestamp = time.strftime("%H:%M:%S")
-                    self.status_label.setText(f"New box drawn. Click Save to confirm and store coordinates.")
-
-                    # Update messages
-                    print(f"[{timestamp}] 📦 New bounding box drawn. Waiting for confirmation...")
-
-                # If a second box is drawn, remove the first box and keep only the new one
-                elif current_count > 1:
-                    # Keep only the newest box (last one)
-                    newest_box = self.viewer.boxes[-1]
-
-                    # COMPLETELY CLEAR everything (data and UI)
-                    self.viewer.reset_selection()
-
-                    # Now add back only the newest box
-                    self.viewer.boxes = [newest_box]
-
-                    # Update pending box to the new one
-                    self.pending_box = newest_box[0]
-                    self.pending_box_label = newest_box[1]
-
-                    # Ensure save button is enabled for the new box
-                    self.save_box_btn.setEnabled(True)
-                    self.save_box_btn.setStyleSheet("""
-                        QPushButton {
-                            background-color: #4CAF50;
-                            color: white;
-                            font-weight: bold;
-                            padding: 5px;
-                        }
-                    """)
-
-                    # Force update the viewer
-                    self.viewer.update()
-
-                    # Show notification
-                    self.status_label.setText("Previous box removed. New box ready to save.")
-                    QMessageBox.information(
-                        self,
-                        "Box Replaced",
-                        "Only one box can be drawn at a time.\n\n"
-                        "The previous box has been removed and replaced with the new one."
-                    )
-
-            self.previous_box_count = len(self.viewer.boxes)
+        except Exception as e:
+            print(f"Error in track_bounding_box_changes: {e}")
+            self.viewer.safe_clear_boxes()
+            self.save_box_btn.setEnabled(False)
+            self.pending_box = None  # <-- ADD THIS
+            self.pending_box_label = None  # <-- ADD THIS
+            self.save_box_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #cccccc;
+                    color: #666666;
+                    font-weight: bold;
+                    padding: 5px;
+                }
+            """)
 
     def save_current_box(self):
         """Save the current pending bounding box to JSON file - automatically saves world coordinates"""

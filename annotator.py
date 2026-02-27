@@ -1700,35 +1700,63 @@ You may need to move files to the appropriate train/val folders.
         """Reset all selection and interaction states and clear all boxes data and UI"""
         # Clear all boxes data
         self.boxes.clear()
+        self.regular_boxes = self.boxes  # Update reference
+        self.rotated_boxes.clear()
 
         # Reset selection states
         self.selected_index = -1
+        self.selected_type = None
         self.dragging = False
         self.resizing = False
-        self.resize_handle = None
-        self.obb_corner_dragging = -1
-        self.obb_selected_index = -1
+        self.rotating = False
+        self.resize_handle = -1
 
         # Reset drawing states
         self.drawing = False
-        self.start_point = None
+        self.drawing_obb = False
+        self.start_img_pt = QPointF()
+        self.end_img_pt = QPointF()
         self.current_rect = None
 
-        # Reset OBB drawing states if they exist
-        if hasattr(self, 'obb_corners'):
-            self.obb_corners = []
-        if hasattr(self, 'obb_drawing'):
-            self.obb_drawing = False
+        # Reset OBB drawing states
+        self.obb_points.clear()
+        self.obb_temp_line = None
+        self.obb_corners = []
 
         # Clear any temporary or cached data
-        if hasattr(self, 'temp_box'):
-            self.temp_box = None
-        if hasattr(self, 'hover_index'):
-            self.hover_index = -1
+        self.temp_box_corners = []
 
-        # Force complete redraw of the widget
+        # Force complete redraw
         self.update()
 
-        # Optional: Emit a signal that boxes have been cleared
-        # if hasattr(self, 'boxes_cleared'):
-        #     self.boxes_cleared.emit()
+    #use for prevent multiple bounding box
+    def safe_clear_boxes(self):
+        """Safely clear ALL boxes and reset selection"""
+        # Clear regular boxes
+        self.boxes.clear()
+        self.regular_boxes = self.boxes  # Update reference
+
+        # Clear rotated boxes
+        self.rotated_boxes.clear()
+
+        # Reset ALL selection and interaction states
+        self.selected_index = -1
+        self.selected_type = None
+        self.drawing = False
+        self.dragging = False
+        self.resizing = False
+        self.rotating = False
+        self.resize_handle = -1
+
+        # Reset OBB drawing states
+        self.drawing_obb = False
+        self.obb_points.clear()
+        self.obb_temp_line = None
+
+        # Reset any temporary variables
+        self.current_rect = None
+        self.start_img_pt = QPointF()
+        self.end_img_pt = QPointF()
+
+        # Force complete redraw
+        self.update()
