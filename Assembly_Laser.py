@@ -5,13 +5,15 @@ import time
 import json
 import numpy as np
 import cv2
+import socket
 from datetime import datetime
 from PIL import Image
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QFileDialog,
     QVBoxLayout, QHBoxLayout,
     QComboBox, QPushButton,
-    QMessageBox, QLabel
+    QMessageBox, QLabel, QLineEdit,
+    QSpinBox
 )
 from PySide6.QtGui import QKeySequence, QShortcut, QColor
 from PySide6.QtCore import Signal, QObject, QTimer, Qt, QRectF
@@ -252,12 +254,15 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Delete"), self, activated=self.delete_selected)
         QShortcut(QKeySequence("Ctrl+S"), self, activated=self.save_current_box)
 
+        self.host_edit = QLineEdit("127.0.0.1")
+        self.port_spin = QSpinBox()
+        self.port_spin.setValue(1220)
+
     def on_annotation_status(self, message):
         """Handle status messages from annotation widget"""
         self.status_label.setText(message)
         # Remove the OBB condition entirely or keep only TCP messages if needed
         timestamp = time.strftime("%H:%M:%S")
-        self.update_tcp_messages(f"[{timestamp}] {message}")
 
 
     def create_required_folders(self):
@@ -412,6 +417,7 @@ class MainWindow(QMainWindow):
             return
 
         try:
+            import socket
             # Read the original image to get dimensions
             image = Image.open(self.image_path)
             img_width, img_height = image.size
@@ -434,6 +440,7 @@ class MainWindow(QMainWindow):
             ]
 
             world_corners = []
+            world_coordinate_strings = []
             for corner in corners_pixel:
                 world_point = self.calibration.pixel_to_world(corner)
                 if world_point:
@@ -511,6 +518,57 @@ class MainWindow(QMainWindow):
             )
 
             self.status_label.setText(f"Box saved: {filename}")
+
+            # Format world coordinates for TCP sending
+            world_coord_string = (f"{world_corners[0][0]:.2f}_{world_corners[0][1]:.2f},"
+                                  f"{world_corners[1][0]:.2f}_{world_corners[1][1]:.2f},"
+                                  f"{world_corners[2][0]:.2f}_{world_corners[2][1]:.2f},"
+                                  f"{world_corners[3][0]:.2f}_{world_corners[3][1]:.2f}")
+
+            world_coordinate_strings.append(world_coord_string)
+
+            # Send coordinates to server via TCP/IP
+            if world_coordinate_strings:  # Prefer sending world coordinates if available
+                server_ip = "127.0.0.1"
+                server_port = 1220
+
+                # Validate inputs
+                if not server_ip:
+                    print("❌ No server IP address specified")
+                    return
+
+                try:
+                    # Create socket connection
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.settimeout(5)  # 5 second timeout
+
+                    print(f"\n📡 Connecting to server {server_ip}:{server_port}...")
+                    sock.connect((server_ip, server_port))
+
+                    message = "\n".join(world_coordinate_strings) + "\n"
+
+                    # Send data
+                    sock.sendall(message.encode('utf-8'))
+                    print(
+                        f"✅ Sent {len(world_coordinate_strings)} coordinate sets to server")
+
+                    # Optionally receive response
+                    try:
+                        response = sock.recv(1024)
+                        print(f"📨 Server response: {response.decode('utf-8').strip()}")
+                    except:
+                        print("⚠️ No response from server")
+
+                    sock.close()
+
+                except socket.timeout:
+                    print(f"❌ Connection timeout to {server_ip}:{server_port}")
+                except socket.error as e:
+                    print(f"❌ Socket error: {e}")
+                except Exception as e:
+                    print(f"❌ Error sending to server: {e}")
+            else:
+                print("\n⚠️ No coordinates to send to server")
 
         except Exception as e:
             QMessageBox.critical(
